@@ -51,3 +51,41 @@ pub fn cancelled(env: &Env, seller: &Address) {
     env.events()
         .publish((Symbol::new(env, "cancelled"), seller.clone()), ());
 }
+
+pub fn credit_applied(env: &Env, bidder: &Address, credit_used: i128, transferred: i128) {
+    env.events().publish(
+        (Symbol::new(env, "credit_applied"), bidder.clone()),
+        (credit_used, transferred),
+    );
+}
+
+pub fn dutch_started(
+    env: &Env,
+    seller: &Address,
+    start_price: i128,
+    floor_price: i128,
+    start_ledger: u32,
+    duration_ledgers: u32,
+) {
+    env.events().publish(
+        (Symbol::new(env, "dutch_started"), seller.clone()),
+        (start_price, floor_price, start_ledger, duration_ledgers),
+    );
+}
+
+pub fn dutch_bought(env: &Env, buyer: &Address, price: i128) {
+    env.events()
+        .publish((Symbol::new(env, "dutch_bought"), buyer.clone()), price);
+}
+
+pub fn nft_escrowed(env: &Env, nft_contract: &Address, token_id: u32) {
+    env.events().publish(
+        (Symbol::new(env, "nft_escrowed"), nft_contract.clone()),
+        token_id,
+    );
+}
+
+pub fn nft_released(env: &Env, to: &Address, token_id: u32) {
+    env.events()
+        .publish((Symbol::new(env, "nft_released"), to.clone()), token_id);
+}
