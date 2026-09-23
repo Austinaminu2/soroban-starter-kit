@@ -678,6 +678,8 @@ fn test_auction_full_lifecycle_competing_bids_and_withdrawal() {
         &deadline,
         &None,
         &0,
+        &0,
+        &0,
     );
 
     // bidder1 places the opening bid at start_price
@@ -739,6 +741,8 @@ fn test_auction_reserve_not_met_refunds_bidder() {
         &100,
         &deadline,
         &Some(reserve_price),
+        &0,
+        &0,
         &0,
     );
 

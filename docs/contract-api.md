@@ -307,15 +307,16 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
-| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline` |
+| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32, cancellation_grace_ledgers: u32, cancellation_fee: i128` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline` |
 | `bid` | `env: Env, bidder: Address, amount: i128` | `Result<(), AuctionError>` | `InvalidAmount`, `AuctionEnded`, `NotInitialized`, `BidTooLow` |
-| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced` |
+| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced`, `InvalidAmount` |
 | `end` | `env: Env` | `Result<(), AuctionError>` | `NotInitialized`, `AuctionNotEnded`, `AlreadyEnded` |
 | `withdraw` | `env: Env, bidder: Address` | `Result<(), AuctionError>` | `NothingToWithdraw` |
 | `get_pending` | `env: Env, bidder: Address` | `i128` | None |
 | `get_info` | `env: Env` | `Result<AuctionInfo, AuctionError>` | `NotInitialized` |
+| `is_cancelled` | `env: Env` | `bool` | None |
 
-`bid` extends `deadline` by `extension_window` ledgers when a bid lands within that window of the current deadline (anti-sniping). `end` settles to the seller when `highest_bid >= reserve_price` (or no reserve is set); otherwise it refunds the highest bidder and the item goes unsold. `cancel` only succeeds before the first bid is placed.
+`bid` extends `deadline` by `extension_window` ledgers when a bid lands within that window of the current deadline (anti-sniping). `end` settles to the seller when `highest_bid >= reserve_price` (or no reserve is set); otherwise it refunds the highest bidder and the item goes unsold. `cancel` always succeeds before the first bid is placed. After a bid, it only succeeds inside the cancellation grace window (`current_ledger <= start_ledger + cancellation_grace_ledgers`, disabled when `cancellation_grace_ledgers` is `0`): the seller pays `cancellation_fee` into the contract, the top bidder's pending refund is credited with their full bid plus the fee, and a `cancelled_with_compensation` event carrying `AuctionCancelledWithCompensation { seller, top_bidder, compensation_amount }` is emitted. A cancelled auction cannot be settled with `end`.
 
 **Errors:**
 - `AlreadyInitialized` (1) — `start` called twice
@@ -323,14 +324,14 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 - `AuctionEnded` (3) — Deadline passed or auction cancelled
 - `AuctionNotEnded` (4) — `end` called before the deadline
 - `BidTooLow` (5) — Bid below the required minimum
-- `AlreadyEnded` (6) — Already settled
+- `AlreadyEnded` (6) — Already settled or cancelled
 - `NoBids` (7) — Reserved; `end()` handles the no-bids case via an event, not this error
 - `NotAuthorized` (8) — Caller is not the seller
-- `InvalidAmount` (9) — `start_price`/`min_increment`/bid <= 0
+- `InvalidAmount` (9) — `start_price`/`min_increment`/bid <= 0, or `cancellation_fee` < 0
 - `InvalidDeadline` (10) — `deadline` not in the future
 - `NothingToWithdraw` (11) — No pending refund
 - `ReserveNotMet` (12) — Reserved; `end()` handles this case via an event, not this error
-- `BidAlreadyPlaced` (13) — `cancel` called after a bid was placed
+- `BidAlreadyPlaced` (13) — `cancel` called after a bid was placed, outside the cancellation grace window
 
 ---
 

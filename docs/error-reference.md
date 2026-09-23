@@ -476,11 +476,11 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 ### `BidAlreadyPlaced` (code 13)
 
-**Description:** `cancel` was called after at least one bid has already been placed.
+**Description:** `cancel` was called after at least one bid has already been placed, and the cancellation grace window is disabled (`cancellation_grace_ledgers = 0`) or has elapsed.
 
-**Common cause:** The seller attempting to cancel an auction that already has bidding activity.
+**Common cause:** The seller attempting to cancel an auction that already has bidding activity after `start_ledger + cancellation_grace_ledgers`.
 
-**Resolution:** `cancel` is only valid before the first bid; once bidding starts the auction must run to `end()`.
+**Resolution:** Once bidding starts, `cancel` is only valid inside the grace window, and the seller must pay `cancellation_fee` to the top bidder. After the window closes, the auction must run to `end()`.
 
 ---
 
