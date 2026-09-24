@@ -240,11 +240,18 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
 | `initialize` | `env: Env, signers: Vec<Address>, threshold: u32, weights: Option<Vec<SignerWeight>>` | `Result<(), MultisigError>` | `AlreadyInitialized`, `InvalidThreshold`, `InvalidSigners`, `InvalidWeight` |
-| `add_signer` | `env: Env, approvals: Vec<Address>, signer: Address, new_threshold: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners` |
+| `add_signer` | `env: Env, approvals: Vec<Address>, signer: Address, weight: u32, new_threshold: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners`, `InvalidWeight` |
 | `remove_signer` | `env: Env, approvals: Vec<Address>, signer: Address, new_threshold: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners` |
+| `update_signer_weight` | `env: Env, approvals: Vec<Address>, signer: Address, new_weight: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners`, `InvalidWeight` |
+| `propose_signer_change` | `env: Env, proposer: Address, change: SignerChange, expiry_ledgers: u32` | `Result<u64, MultisigError>` | `NotSigner`, `NotInitialized` |
+| `sign_signer_change` | `env: Env, signer: Address, proposal_id: u64` | `Result<(), MultisigError>` | `NotSigner`, `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `AlreadySigned` |
+| `execute_signer_change` | `env: Env, proposal_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `NotInitialized`, `ThresholdNotMet`, plus any error from the applied change |
+| `get_signer_proposal` | `env: Env, proposal_id: u64` | `Option<SignerProposal>` | None |
 | `propose_transaction` | `env: Env, proposer: Address, target: Address, function: Symbol, args: Vec<Val>, expiry_ledgers: u32` | `Result<u64, MultisigError>` | `NotSigner`, `NotInitialized` |
 | `sign_transaction` | `env: Env, signer: Address, tx_id: u64` | `Result<(), MultisigError>` | `NotSigner`, `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `AlreadySigned` |
 | `execute_transaction` | `env: Env, tx_id: u64` | `Result<Val, MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `NotInitialized`, `ThresholdNotMet` |
+| `cancel_proposal` | `env: Env, proposer: Address, tx_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `NotProposer`, `AlreadyExecuted` |
+| `revoke_signature` | `env: Env, signer: Address, tx_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `NotSigned` |
 | `execute_batch` | `env: Env, proposal_ids: Vec<u64>` | `Vec<u64>` | None |
 | `get_signers` | `env: Env` | `Vec<Address>` | None |
 | `get_threshold` | `env: Env` | `Option<u32>` | None |
@@ -255,7 +262,7 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 | `cleanup_expired` | `env: Env, tx_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `NotYetExpired` |
 | `contract_version` | `env: Env` | `u32` | None |
 
-`initialize`'s optional `weights` parameter assigns each signer a custom vote weight (any signer omitted from `weights` defaults to weight 1); `threshold` is then measured in accumulated weight rather than raw signer count, so unweighted wallets behave exactly like the original flat-count design. `execute_batch` attempts each proposal ID independently — a failure for one (not found, already executed, expired, or under threshold) is silently skipped rather than aborting the batch; diff the returned `Vec<u64>` against the input to see what ran, or inspect individual proposals via `get_transaction`. Every proposal expires `expiry_ledgers` after `propose_transaction`; `cleanup_expired` lets anyone reclaim storage for an expired, unexecuted proposal.
+`initialize`'s optional `weights` parameter assigns each signer a custom vote weight (any signer omitted from `weights` defaults to weight 1); `threshold` is then measured in accumulated weight rather than raw signer count, so unweighted wallets behave exactly like the original flat-count design. `execute_batch` attempts each proposal ID independently — a failure for one (not found, already executed, expired, or under threshold) is silently skipped rather than aborting the batch; diff the returned `Vec<u64>` against the input to see what ran, or inspect individual proposals via `get_transaction`. Every proposal expires `expiry_ledgers` after `propose_transaction`; `cleanup_expired` lets anyone reclaim storage for an expired, unexecuted proposal. Before execution the original proposer may `cancel_proposal` (removing it from storage), and any signer may `revoke_signature`, which recomputes `accumulated_weight` from the remaining signatures using current weights. `add_signer` takes a custom `weight` (≥ 1), and `update_signer_weight` changes an existing signer's weight while revalidating the current threshold against the new total weight. Signer additions, removals, weight updates, and threshold changes can also be approved asynchronously: `propose_signer_change` stores a `SignerChange` (`AddSigner`, `RemoveSigner`, `UpdateSignerWeight`, `ChangeThreshold`) that signers approve over time with `sign_signer_change`; `execute_signer_change` applies it once accumulated weight meets the threshold.
 
 **Errors:**
 - `AlreadyInitialized` (1) — `initialize` called twice
@@ -271,6 +278,8 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 - `ProposalExpired` (11) — Proposal is past its `expiry_ledger`
 - `InvalidWeight` (12) — A `SignerWeight.weight` of zero was supplied
 - `NotYetExpired` (13) — `cleanup_expired` called before the proposal's expiry ledger was reached
+- `NotProposer` (14) — `cancel_proposal` called by someone other than the original proposer
+- `NotSigned` (15) — `revoke_signature` called by a signer who has not signed the transaction
 
 ---
 
@@ -473,8 +482,9 @@ Linear curve: `price = reserve / (supply + 1)` (scaled by `PRICE_SCALE`). `buy` 
 | `proposer_cancel_proposal` | `env: Env, proposer: Address, proposal_id: u32` | `Result<(), DaoError>` | `NotInitialized`, `ProposalNotFound`, `NotAuthorized`, `InvalidState`, `VotesAlreadyCast` |
 | `get_proposal` | `env: Env, proposal_id: u32` | `Result<Proposal, DaoError>` | `ProposalNotFound` |
 | `proposal_count` | `env: Env` | `u32` | None |
+| `get_proposals` | `env: Env, cursor: u32, limit: u32, state: Option<ProposalState>` | `ProposalPage` | None |
 
-Voting weight is the voter's token balance at vote time, capped at the total supply snapshot taken at proposal creation (flash-loan resistant). `execute_proposal` requires both the absolute `quorum` and, if `quorum_bps > 0`, that participation reach `quorum_bps` of the snapshotted total supply, plus `yes_votes > no_votes`.
+Voting weight is the voter's token balance at vote time, capped at the total supply snapshot taken at proposal creation (flash-loan resistant). `execute_proposal` requires both the absolute `quorum` and, if `quorum_bps > 0`, that participation reach `quorum_bps` of the snapshotted total supply, plus `yes_votes > no_votes`. `get_proposals` lists proposals in ascending ID order via `soroban_common::paginate`, optionally filtered by `ProposalState`; `limit` is clamped to `[1, MAX_PAGE_SIZE]` (50), and the returned `next_cursor` is `None` once the end is reached.
 
 **Errors:**
 - `NotAuthorized` (1) — Caller not admin/original proposer
