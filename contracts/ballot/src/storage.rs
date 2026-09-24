@@ -49,3 +49,20 @@ pub enum DataKey {
     /// Whether the given voter has already voted in the given ballot.
     BallotVoter(u32, Address),
 }
+
+impl DataKey {
+    /// Returns the ordered list of choice indices for the given ballot.
+    ///
+    /// Used by the stateful property harness (#1128) to enumerate every
+    /// choice when asserting the tally-conservation invariant
+    /// `total_votes == sum(choice_votes)`.
+    pub fn choice_indices(choice_count: u32) -> soroban_sdk::Vec<u32> {
+        let mut indices = soroban_sdk::Vec::new(&soroban_sdk::Env::default());
+        let mut i = 0u32;
+        while i < choice_count {
+            indices.push_back(i);
+            i += 1;
+        }
+        indices
+    }
+}
