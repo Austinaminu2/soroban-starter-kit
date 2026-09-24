@@ -14,7 +14,8 @@ use soroban_sdk::{
     token::StellarAssetClient,
 };
 
-use crate::{AuctionContract, AuctionContractClient};
+use crate::dutch::price_at;
+use crate::{AuctionContract, AuctionContractClient, AuctionError, DataKey, DutchConfig};
 
 fn setup_auction<'a>(
     env: &'a Env,
@@ -38,6 +39,8 @@ fn setup_auction<'a>(
         &deadline,
         &None,
         &0,
+        &None,
+        &None,
     );
 
     (client, seller, token_addr, auction_addr)
@@ -196,7 +199,9 @@ proptest! {
             &10i128,
             &deadline,
             &Some(reserve_price),
-            &0
+            &0,
+            &None,
+            &None,
         );
 
         if result.is_err() {
@@ -222,6 +227,156 @@ proptest! {
             // Reserve not met: seller should receive nothing
             prop_assert_eq!(seller_balance, 0,
                 "Seller received payment when reserve was not met");
+        }
+    }
+}
+
+proptest! {
+    /// Issue #1071: the Dutch price never increases over time, stays within
+    /// `[floor_price, start_price]`, and clamps at both ends of the schedule.
+    #[test]
+    fn prop_dutch_price_monotonic_and_clamped(
+        (start_price, floor_price) in (1i128..=i128::MAX).prop_flat_map(|s| (Just(s), 0i128..s)),
+        start_ledger in 0u32..=1_000_000,
+        duration_ledgers in 1u32..=1_000_000,
+        t1 in 0u32..=3_000_000,
+        dt in 0u32..=3_000_000,
+    ) {
+        let cfg = DutchConfig { start_price, floor_price, start_ledger, duration_ledgers };
+        let t2 = t1.saturating_add(dt);
+
+        // The split-division formula never overflows for valid schedules.
+        let p1 = price_at(&cfg, t1).unwrap();
+        let p2 = price_at(&cfg, t2).unwrap();
+
+        prop_assert!(p2 <= p1, "price increased: {} -> {}", p1, p2);
+        prop_assert!(p1 >= floor_price && p1 <= start_price);
+        if t1 <= start_ledger {
+            prop_assert_eq!(p1, start_price);
+        }
+        if t1 >= start_ledger + duration_ledgers {
+            prop_assert_eq!(p1, floor_price);
+        }
+    }
+
+    /// Issue #1071: for values where the textbook formula cannot overflow, the
+    /// contract's price matches it exactly.
+    #[test]
+    fn prop_dutch_price_matches_reference_formula(
+        (start_price, floor_price) in (1i128..=1_000_000_000_000i128)
+            .prop_flat_map(|s| (Just(s), 0i128..s)),
+        duration_ledgers in 1u32..=100_000,
+        elapsed in 0u32..=100_000,
+    ) {
+        let cfg = DutchConfig { start_price, floor_price, start_ledger: 0, duration_ledgers };
+        let expected = if elapsed >= duration_ledgers {
+            floor_price
+        } else {
+            start_price
+                - (start_price - floor_price) * i128::from(elapsed) / i128::from(duration_ledgers)
+        };
+        prop_assert_eq!(price_at(&cfg, elapsed).unwrap(), expected);
+    }
+
+    /// Issue #1070: bidding near `i128::MAX` returns `AuctionError::Overflow`
+    /// (or a normal validation error) instead of trapping the host.
+    #[test]
+    fn prop_bid_near_i128_max_returns_error_not_panic(
+        headroom in 0i128..=1_000_000i128,
+        min_increment in 1i128..=2_000_000i128,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.sequence_number = 100);
+
+        let start_price = i128::MAX - headroom;
+        let (client, _seller, token_addr, _) = setup_auction(&env, start_price, min_increment);
+
+        let first = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_addr).mint(&first, &start_price);
+        client.bid(&first, &start_price);
+
+        let second = Address::generate(&env);
+        match start_price.checked_add(min_increment) {
+            None => {
+                prop_assert_eq!(
+                    client.try_bid(&second, &i128::MAX),
+                    Err(Ok(AuctionError::Overflow))
+                );
+            }
+            Some(required) => {
+                prop_assert_eq!(
+                    client.try_bid(&second, &(required - 1)),
+                    Err(Ok(AuctionError::BidTooLow))
+                );
+            }
+        }
+        prop_assert_eq!(client.get_info().highest_bid, start_price);
+    }
+
+    /// Issue #1070: queueing a refund onto a pending balance near `i128::MAX`
+    /// returns `AuctionError::Overflow` exactly when the sum would overflow.
+    #[test]
+    fn prop_pending_refund_near_i128_max(existing in (i128::MAX - 2_000)..=i128::MAX) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.sequence_number = 100);
+
+        let (client, _seller, token_addr, auction_addr) = setup_auction(&env, 1_000, 100);
+        let b1 = Address::generate(&env);
+        let b2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_addr).mint(&b1, &1_000);
+        StellarAssetClient::new(&env, &token_addr).mint(&b2, &1_100);
+        client.bid(&b1, &1_000);
+
+        env.as_contract(&auction_addr, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Pending(b1.clone()), &existing);
+        });
+
+        let result = client.try_bid(&b2, &1_100);
+        if existing.checked_add(1_000).is_none() {
+            prop_assert_eq!(result, Err(Ok(AuctionError::Overflow)));
+            prop_assert_eq!(client.get_pending(&b1), existing);
+        } else {
+            prop_assert!(result.is_ok());
+            prop_assert_eq!(client.get_pending(&b1), existing + 1_000);
+        }
+    }
+
+    /// Issue #1068: mixing `bid` and `bid_with_credit` keeps the contract exactly
+    /// solvent: its balance equals the highest bid plus all pending refunds.
+    #[test]
+    fn prop_bid_with_credit_preserves_accounting(
+        steps in proptest::collection::vec((0i128..=500i128, any::<bool>()), 1..=12),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.sequence_number = 100);
+
+        let (client, _seller, token_addr, auction_addr) = setup_auction(&env, 100, 10);
+        let token = soroban_sdk::token::Client::new(&env, &token_addr);
+        let bidders = [Address::generate(&env), Address::generate(&env)];
+        for bidder in &bidders {
+            StellarAssetClient::new(&env, &token_addr).mint(bidder, &1_000_000);
+        }
+
+        let mut next_min = 100i128;
+        for (i, (extra, use_credit)) in steps.into_iter().enumerate() {
+            let bidder = &bidders[i % 2];
+            let amount = next_min + extra;
+            if use_credit {
+                client.bid_with_credit(bidder, &amount);
+            } else {
+                client.bid(bidder, &amount);
+            }
+            next_min = amount + 10;
+
+            let owed = amount + client.get_pending(&bidders[0]) + client.get_pending(&bidders[1]);
+            prop_assert_eq!(token.balance(&auction_addr), owed);
+            let total = token.balance(&bidders[0]) + token.balance(&bidders[1]) + owed;
+            prop_assert_eq!(total, 2_000_000);
         }
     }
 }

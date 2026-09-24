@@ -1818,7 +1818,9 @@ dependencies = [
 name = "soroban-auction-template"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-common",
+ "soroban-nft-template",
  "soroban-sdk",
 ]
 
