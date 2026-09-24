@@ -74,4 +74,9 @@ pub fn tally_all_result(env: &Env, counts: &Vec<i128>) {
 pub fn tally_quadratic_result(env: &Env, counts: &Vec<i128>) {
     env.events()
         .publish((Symbol::new(env, "tally_quadratic_result"),), counts.clone());
+/// Emitted when the ballot is closed via `tally_all` after the voting window
+/// has ended (#1121). Signals that official tally results are final.
+pub fn tally_completed(env: &Env, counts: &Vec<i128>) {
+    env.events()
+        .publish((Symbol::new(env, "TallyCompleted"),), counts.clone());
 }

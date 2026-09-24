@@ -393,3 +393,8 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 ---
 
 **Ready to build on Soroban?** Start with any template and customize it for your use case! 🚀
+
+## Handsoff notes
+
+<!-- handsoff-issue-1119 -->
+- #1119: contracts/multisig: Off-chain EIP-712 / SEP-format typed signature batch verification

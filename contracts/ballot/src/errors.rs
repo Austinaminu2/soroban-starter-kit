@@ -20,6 +20,8 @@ pub enum BallotError {
     NoChoices = 11,
     InvalidRanking = 12,
     DuplicateRanking = 13,
+    VotingNotClosed = 12,
+    TallyNotAvailable = 13,
 }
 
 impl_display_error!(
@@ -37,4 +39,6 @@ impl_display_error!(
     NoChoices            => "no choices provided",
     InvalidRanking       => "invalid preference ranking",
     DuplicateRanking     => "duplicate choice in ranking",
+    VotingNotClosed      => "voting window has not closed",
+    TallyNotAvailable    => "tally not available",
 );
