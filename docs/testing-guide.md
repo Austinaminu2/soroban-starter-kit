@@ -196,7 +196,7 @@ cargo test -p soroban-integration-tests
 
 Every test that runs against a Soroban `Env` automatically writes a JSON snapshot of the final ledger state (auth entries, storage, events) to a `test_snapshots/` directory next to the crate. The snapshot is checked on the next run; if it differs, the test fails.
 
-Snapshot files are committed to the repository. They serve as a regression guard: if a refactor silently changes what gets stored or which auth calls are made, the snapshot diff makes it visible in code review.
+> **Gitignore choice:** `test_snapshots/` directories are listed in `.gitignore` and are **not committed**. Each contributor generates their own snapshots locally, so they are not a cross-commit regression guard and never appear in `git status`/`git diff` for review. What they *are* useful for is catching accidental changes within a single working session: if you refactor and a snapshot that was passing a moment ago now differs, the failure points at exactly what changed in ledger state or auth calls.
 
 **Updating snapshots** after an intentional change:
 
@@ -210,78 +210,4 @@ rm -rf contracts/token/test_snapshots/
 cargo test -p soroban-token-template
 ```
 
-Review the diff with `git diff` before committing — unexpected changes to auth entries or storage keys are a signal that something is wrong.
-
----
-
-## Benchmarks
-
-Benchmarks use [Criterion](https://bheisler.github.io/criterion.rs/book/) and live in `benches/benches/`. Each benchmark creates a fresh `Env` per iteration and measures wall-clock time as a proxy for compute unit (CU) cost.
-
-```bash
-# Run all benchmarks and print a summary
-cargo bench
-
-# Run only token benchmarks
-cargo bench -p soroban-token-benches
-
-# Save a baseline to compare against later
-cargo bench -- --save-baseline before_my_change
-
-# Compare against the saved baseline
-cargo bench -- --baseline before_my_change
-```
-
-Criterion writes HTML reports to `target/criterion/`. CI runs benchmarks on every PR via `.github/workflows/bench.yml` and fails if a measured operation regresses by more than the configured threshold.
-
-**When to add a benchmark:**
-- A new hot-path function (mint, transfer, fund, approve_delivery).
-- Any change that touches storage reads/writes in a loop.
-
----
-
-## Fuzz Tests
-
-Fuzz targets live in `fuzz/fuzz_targets/` and use `libfuzzer-sys`. They feed arbitrary byte sequences into contract entry points and look for panics or unexpected errors.
-
-```bash
-# Install cargo-fuzz (one-time)
-cargo install cargo-fuzz
-
-# Run the token fuzzer (Ctrl-C to stop)
-cargo fuzz run token_fuzz
-
-# Run with a specific corpus directory
-cargo fuzz run token_fuzz fuzz/corpus/token_fuzz/
-
-# Reproduce a specific crash input
-cargo fuzz run token_fuzz fuzz/artifacts/token_fuzz/crash-<hash>
-```
-
-Fuzz targets are not run in normal `cargo test`. They require a nightly toolchain (set in `rust-toolchain.toml`) and are run separately in CI or locally.
-
----
-
-## Quick Reference
-
-```bash
-# All unit + property tests for one contract
-cargo test -p soroban-token-template
-cargo test -p soroban-escrow-template
-
-# Integration tests only
-cargo test -p soroban-integration-tests
-
-# Everything in the workspace
-cargo test
-
-# Benchmarks
-cargo bench
-
-# Fuzz (requires nightly)
-cargo fuzz run token_fuzz
-
-# Reproduce a proptest failure
-PROPTEST_REGRESSIONS=contracts/token/proptest-regressions/prop_test.txt \
-  cargo test -p soroban-token-template <test_name>
-```
+Because the snapshots are gitignored, there is no diff to review or commit — regenerating them simply refreshes your local baseline. If you want a change to ledger state or auth calls to be visible in code review, assert on it explicitly in the test (e.g. `env.events().all()` or `client.balance(...)`) rather than relying on the snapshot.
