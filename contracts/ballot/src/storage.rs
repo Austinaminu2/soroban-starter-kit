@@ -25,4 +25,7 @@ pub enum DataKey {
     Choices,
     /// Vote tally for choice at the given index.
     ChoiceVotes(u32),
+    // ── quadratic voting additions (#1123) ─────────────────────────────────
+    /// Whether quadratic voting mode is enabled for this ballot.
+    Quadratic,
 }
