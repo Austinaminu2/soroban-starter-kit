@@ -14,7 +14,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
 };
 
-use crate::{SwapContract, SwapContractClient};
+use crate::{SwapContract, SwapContractClient, calculate_and_validate_fee};
 
 fn setup_swap<'a>(env: &'a Env, fee_bps: u32) -> (SwapContractClient<'a>, Address, Address) {
     let admin = Address::generate(env);
@@ -35,7 +35,7 @@ proptest! {
         amount_b in 100i128..=1_000_000i128,
         fee_bps in 0u32..=10_000u32,
     ) {
-        let fee = (amount_b * i128::from(fee_bps)) / 10_000;
+        let fee = calculate_and_validate_fee(amount_b, fee_bps).unwrap();
         let party_a_amount = amount_b - fee;
 
         // Invariant: no rounding loss
@@ -46,6 +46,28 @@ proptest! {
         // Invariant: both amounts non-negative
         prop_assert!(fee >= 0, "Negative fee: {}", fee);
         prop_assert!(party_a_amount >= 0, "Negative party_a amount: {}", party_a_amount);
+        prop_assert!(fee <= amount_b, "Fee cannot exceed total traded amount");
+    }
+
+    /// Property: Treasury fee cannot exceed total traded amount across split transactions
+    #[test]
+    fn prop_fee_invariance_split_transactions(
+        total_amount in 10i128..=10_000i128,
+        num_splits in 2usize..=10usize,
+        fee_bps in 1u32..=1_000u32,
+    ) {
+        let chunk = total_amount / num_splits as i128;
+        if chunk > 0 {
+            let mut total_split_fee = 0i128;
+            for _ in 0..num_splits {
+                let split_fee = calculate_and_validate_fee(chunk, fee_bps).unwrap();
+                prop_assert!(split_fee > 0, "Fee must be non-zero when fee_bps > 0");
+                prop_assert!(split_fee <= chunk, "Fee cannot exceed chunk size");
+                total_split_fee += split_fee;
+            }
+            prop_assert!(total_split_fee <= total_amount,
+                "Total fee from split transactions cannot exceed total traded volume");
+        }
     }
 
     /// Property: Total transferred out equals total transferred in
@@ -83,7 +105,9 @@ proptest! {
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &None,
+            &None,
         );
 
         if swap_id_result.is_err() {
@@ -100,7 +124,7 @@ proptest! {
             let tok_b = soroban_sdk::token::Client::new(&env, &token_b);
 
             // Calculate expected fee
-            let fee = (amount_b * i128::from(fee_bps)) / 10_000;
+            let fee = calculate_and_validate_fee(amount_b, fee_bps).unwrap();
             let party_a_net = amount_b - fee;
 
             // Verify balances
@@ -170,7 +194,9 @@ proptest! {
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &None,
+            &None,
         );
 
         if swap_id_result.is_err() {
@@ -222,7 +248,9 @@ proptest! {
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &None,
+            &None,
         );
 
         if swap_id_result.is_err() {
