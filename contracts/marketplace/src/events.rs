@@ -40,3 +40,39 @@ pub fn offer_cancelled(env: &Env, listing_id: u64, buyer: &Address) {
     env.events()
         .publish((Symbol::new(env, "offer_cancelled"), listing_id), buyer.clone());
 }
+
+pub fn collection_offer_made(
+    env: &Env,
+    offer_id: u64,
+    buyer: &Address,
+    nft_contract: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "coll_offered"), offer_id),
+        (buyer.clone(), nft_contract.clone(), amount),
+    );
+}
+
+pub fn collection_offer_accepted(
+    env: &Env,
+    offer_id: u64,
+    seller: &Address,
+    token_id: u32,
+    amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "coll_offer_accepted"), offer_id),
+        (seller.clone(), token_id, amount),
+    );
+}
+
+pub fn collection_offer_cancelled(env: &Env, offer_id: u64, buyer: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "coll_offer_cancelled"), offer_id), buyer.clone());
+}
+
+pub fn royalty_splits_set(env: &Env, admin: &Address, total_bps: u32) {
+    env.events()
+        .publish((Symbol::new(env, "royalty_splits"),), (admin.clone(), total_bps));
+}

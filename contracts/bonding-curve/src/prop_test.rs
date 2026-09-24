@@ -25,7 +25,7 @@ fn setup_bonding_curve<'a>(env: &'a Env) -> (BondingCurveContractClient<'a>, Add
 
     let contract_addr = env.register_contract(None, BondingCurveContract);
     let client = BondingCurveContractClient::new(env, &contract_addr);
-    client.initialize(&admin, &token_addr);
+    client.initialize(&admin, &token_addr, &1_000_000i128, &1i128, &10_000u32, &0u32, &admin);
 
     (client, token_addr, contract_addr)
 }

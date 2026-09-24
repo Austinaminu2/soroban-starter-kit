@@ -1,7 +1,7 @@
 // `#[contracttype]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
-use soroban_sdk::{Address, String, contracttype};
+use soroban_sdk::{Address, String, Vec, contracttype};
 
 /// Instance-storage keys (contract-level state).
 #[contracttype]
@@ -66,4 +66,15 @@ pub struct Proposal {
     /// Used for quorum calculation and to cap voter voting power,
     /// preventing flash-loan-style manipulation.
     pub total_supply_at_creation: i128,
+}
+
+/// One page of results from `get_proposals` (#1110).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ProposalPage {
+    /// Proposals found in this page, in ascending ID order.
+    pub proposals: Vec<Proposal>,
+    /// The cursor to pass to the next call to continue scanning, or `None`
+    /// once the end of the proposal range has been reached.
+    pub next_cursor: Option<u32>,
 }

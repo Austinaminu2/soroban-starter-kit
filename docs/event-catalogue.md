@@ -86,12 +86,19 @@ env.events().publish((topic_1, topic_2, ...), data);
 | Event | Symbol | Topics | Data Type | When Fired |
 |-------|--------|--------|-----------|-----------|
 | Initialized | `initialized` | `(Symbol, u32)` → event name, threshold | `u32` → signer count | `initialize()` called |
-| Signer Added | `added` | `(Symbol, Address)` → event name, signer | `u32` → new threshold | `add_signer()` called |
-| Signer Removed | `removed` | `(Symbol, Address)` → event name, signer | `u32` → new threshold | `remove_signer()` called |
+| Signer Added | `added` | `(Symbol, Address)` → event name, signer | `(u32, u32)` → signer weight, new threshold | `add_signer()` or `execute_signer_change()` called |
+| Signer Weight Updated | `weight_updated` | `(Symbol, Address)` → event name, signer | `(u32, u32)` → old weight, new weight | `update_signer_weight()` or `execute_signer_change()` called |
+| Threshold Changed | `threshold_changed` | `(Symbol,)` → event name | `(u32, u32)` → old threshold, new threshold | `execute_signer_change()` with `ChangeThreshold` |
+| Signer Removed | `removed` | `(Symbol, Address)` → event name, signer | `u32` → new threshold | `remove_signer()` or `execute_signer_change()` called |
 | Transaction Proposed | `proposed` | `(Symbol, Address)` → event name, proposer | `u64` → transaction ID | `propose()` called |
 | Transaction Signed | `signed` | `(Symbol, Address, u64)` → event name, signer, tx ID | `u32` → signature count | `sign()` called |
 | Transaction Executed | `executed` | `(Symbol, u64)` → event name, tx ID | `()` | `execute()` called (threshold met) |
 | Proposal Expired | `expired` | `(Symbol, u64)` → event name, tx ID | `()` | `cleanup_expired()` called |
+| Transaction Cancelled | `cancelled` | `(Symbol, Address)` → event name, proposer | `u64` → transaction ID | `cancel_proposal()` called |
+| Signature Revoked | `revoked` | `(Symbol, Address, u64)` → event name, signer, tx ID | `(u32, u32)` → signature count, accumulated weight | `revoke_signature()` called |
+| Signer Change Proposed | `signer_change_proposed` | `(Symbol, Address)` → event name, proposer | `u64` → signer proposal ID | `propose_signer_change()` called |
+| Signer Change Signed | `signer_change_signed` | `(Symbol, Address, u64)` → event name, signer, proposal ID | `u32` → signature count | `sign_signer_change()` called |
+| Signer Change Executed | `signer_change_executed` | `(Symbol, u64)` → event name, proposal ID | `()` | `execute_signer_change()` called |
 | Batch Executed | `batch_executed` | `(Symbol,)` → event name | `(Vec<u64>, u32)` → executed IDs, skipped count | `execute_batch()` called |
 
 ---
@@ -141,6 +148,11 @@ env.events().publish((topic_1, topic_2, ...), data);
 | Bid Withdrawn | `withdrawn` | `(Symbol, Address)` → event name, bidder | `i128` → amount returned | `withdraw()` called by losing bidder |
 | Deadline Extended | `deadline_extended` | `(Symbol,)` → event name | `u32` → new deadline ledger | Anti-snipe window triggered during `bid()` |
 | Cancelled | `cancelled` | `(Symbol, Address)` → event name, seller | `()` | `cancel()` called by seller (no bids placed) |
+| Credit Applied | `credit_applied` | `(Symbol, Address)` → event name, bidder | `(i128, i128)` → credit used, amount transferred | `bid_with_credit()` called |
+| Dutch Started | `dutch_started` | `(Symbol, Address)` → event name, seller | `(i128, i128, u32, u32)` → start price, floor price, start ledger, duration ledgers | `start_dutch()` called |
+| Dutch Bought | `dutch_bought` | `(Symbol, Address)` → event name, buyer | `i128` → price paid | `buy()` settles a Dutch auction |
+| NFT Escrowed | `nft_escrowed` | `(Symbol, Address)` → event name, NFT contract | `u32` → token id | `start()` / `start_dutch()` with a custodial NFT |
+| NFT Released | `nft_released` | `(Symbol, Address)` → event name, recipient | `u32` → token id | NFT delivered to the winner/buyer or returned to the seller |
 
 ---
 
