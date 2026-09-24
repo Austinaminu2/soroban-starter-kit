@@ -476,11 +476,51 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 ### `BidAlreadyPlaced` (code 13)
 
-**Description:** `cancel` was called after at least one bid has already been placed.
+**Description:** `cancel` was called after at least one bid has already been placed, and the cancellation grace window is disabled (`cancellation_grace_ledgers = 0`) or has elapsed.
 
-**Common cause:** The seller attempting to cancel an auction that already has bidding activity.
+**Common cause:** The seller attempting to cancel an auction that already has bidding activity after `start_ledger + cancellation_grace_ledgers`.
 
-**Resolution:** `cancel` is only valid before the first bid; once bidding starts the auction must run to `end()`.
+**Resolution:** Once bidding starts, `cancel` is only valid inside the grace window, and the seller must pay `cancellation_fee` to the top bidder. After the window closes, the auction must run to `end()`.
+
+---
+
+### `Overflow` (code 14)
+
+**Description:** A checked arithmetic operation on a bid, refund, credit, or Dutch price overflowed `i128` (or `start_ledger + duration_ledgers` overflowed `u32`).
+
+**Common cause:** Prices or increments configured near `i128::MAX`, so `highest_bid + min_increment` or a queued refund cannot be represented.
+
+**Resolution:** Use realistic token amounts; the contract returns this error instead of trapping so no state changes are applied.
+
+---
+
+### `WrongMode` (code 15)
+
+**Description:** The call does not apply to this auction's mode.
+
+**Common cause:** Calling `bid`, `bid_with_credit`, or `end` on an auction started with `start_dutch`, or `get_current_price` / `buy` on an English auction.
+
+**Resolution:** Check `get_dutch_config()`: `Some` means Dutch (use `buy`), `None` means English (use `bid` / `end`).
+
+---
+
+### `AuctionNotStarted` (code 16)
+
+**Description:** `buy` was called before the Dutch auction's `start_ledger`.
+
+**Common cause:** Submitting a purchase for a Dutch auction scheduled to open in the future.
+
+**Resolution:** Wait until the current ledger reaches `get_dutch_config().start_ledger`.
+
+---
+
+### `InvalidNftParams` (code 17)
+
+**Description:** Exactly one of `nft_contract` / `token_id` was supplied to `start` or `start_dutch`.
+
+**Common cause:** Passing an NFT contract without a token id, or vice versa.
+
+**Resolution:** Pass both for a custodial NFT auction, or `None` for both.
 
 ---
 
@@ -1253,6 +1293,36 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 ---
 
+### `PriceExceedsMax` (code 13)
+
+**Description:** The listing's price is higher than the `max_price` the buyer passed to `buy`.
+
+**Common cause:** The seller cancelled and re-listed at a higher price, or the price changed between the buyer signing and the transaction executing.
+
+**Resolution:** Re-read the listing with `get_listing` and retry with an updated `max_price` if the new price is acceptable.
+
+---
+
+### `CollectionOfferNotFound` (code 14)
+
+**Description:** No collection offer exists for the given `offer_id`.
+
+**Common cause:** Accepting or cancelling a collection offer that was never made, or was already accepted or cancelled.
+
+**Resolution:** Call `get_collection_offer(offer_id)` to confirm the offer exists first.
+
+---
+
+### `CollectionOfferExpired` (code 15)
+
+**Description:** The collection offer's `expires_at` ledger has passed, so it can no longer be accepted.
+
+**Common cause:** Calling `accept_collection_offer` after expiry.
+
+**Resolution:** The buyer can still recover the escrowed funds with `cancel_collection_offer`.
+
+---
+
 ## Multisig Contract — `MultisigError`
 
 ### `ProposalExpired` (code 11)
@@ -1731,14 +1801,6 @@ Comprehensive reference for all error codes returned by the contracts in this re
 ---
 
 ## Swap Contract — `SwapError`
-
-> **Note:** `contracts/swap/src/lib.rs` currently contains corrupted/duplicated
-> code (e.g. `set_fee_bps` and `get_fee_bps` are each defined twice, and some
-> branches reference states/errors like `SwapState::Pending`/`Accepted` and
-> `SwapError::SwapNotPending`/`SwapExpired` that don't exist in `storage.rs` /
-> `errors.rs`). This section is cross-checked against the authoritative
-> `errors.rs` enum below; see `contract-api.md` for how this affects the
-> documented public API.
 
 ### `NotAuthorized` (code 1)
 

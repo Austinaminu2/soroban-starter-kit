@@ -1,33 +1,98 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
     clippy::arithmetic_side_effects,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::unwrap_used
 )]
-#![cfg(test)]
 
+extern crate std;
+
+use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
     Address, Env,
-    testutils::{Address as _, Ledger as _},
+    testutils::{Address as _, Ledger},
     token::StellarAssetClient,
 };
+use std::vec::Vec;
 
-use crate::{SwapContract, SwapContractClient};
+#[derive(Clone, Debug)]
+enum Command {
+    Propose { amount_a: i128, amount_b: i128 },
+    Accept { index: usize },
+    Cancel { index: usize },
+}
 
-fn setup_swap<'a>(env: &'a Env, fee_bps: u32) -> (SwapContractClient<'a>, Address, Address) {
+fn commands() -> impl Strategy<Value = Vec<Command>> {
+    prop::collection::vec(
+        prop_oneof![
+            (1i128..=1_000, 1i128..=1_000)
+                .prop_map(|(amount_a, amount_b)| Command::Propose { amount_a, amount_b }),
+            (0usize..=31).prop_map(|index| Command::Accept { index }),
+            (0usize..=31).prop_map(|index| Command::Cancel { index }),
+        ],
+        1..=32,
+    )
+}
+use crate::{SwapContract, SwapContractClient, calculate_and_validate_fee};
+
+fn setup(
+    env: &Env,
+) -> (
+    SwapContractClient,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
+    env.mock_all_auths();
+    env.ledger().with_mut(|ledger| ledger.sequence_number = 1);
     let admin = Address::generate(env);
     let treasury = Address::generate(env);
+    let party_a = Address::generate(env);
+    let party_b = Address::generate(env);
+    let token_a = env
+        .register_stellar_asset_contract_v2(Address::generate(env))
+        .address();
+    let token_b = env
+        .register_stellar_asset_contract_v2(Address::generate(env))
+        .address();
+    StellarAssetClient::new(env, &token_a).mint(&party_a, &1_000_000i128);
+    StellarAssetClient::new(env, &token_b).mint(&party_b, &1_000_000i128);
+    let address = env.register_contract(None, SwapContract);
+    let client = SwapContractClient::new(env, &address);
+    client.initialize(&admin, &treasury, &250);
+    (client, party_a, party_b, treasury, token_a, token_b)
+}
 
-    let swap_addr = env.register_contract(None, SwapContract);
-    let client = SwapContractClient::new(env, &swap_addr);
-    client.initialize(&admin, &treasury, &fee_bps);
-
-    (client, treasury, swap_addr)
+fn assert_conservation(
+    env: &Env,
+    client: &SwapContractClient,
+    party_a: &Address,
+    party_b: &Address,
+    treasury: &Address,
+    token_a: &Address,
+    token_b: &Address,
+) {
+    let contract = client.address.clone();
+    let token_a_client = soroban_sdk::token::Client::new(env, token_a);
+    let token_b_client = soroban_sdk::token::Client::new(env, token_b);
+    let token_a_total = token_a_client.balance(party_a)
+        + token_a_client.balance(party_b)
+        + token_a_client.balance(&contract);
+    let token_b_total = token_b_client.balance(party_a)
+        + token_b_client.balance(party_b)
+        + token_b_client.balance(treasury)
+        + token_b_client.balance(&contract);
+    assert_eq!(token_a_total, 1_000_000, "token A was created or destroyed");
+    assert_eq!(token_b_total, 1_000_000, "token B was created or destroyed");
 }
 
 proptest! {
+    /// Stateful invariant: arbitrary propose/cancel/accept sequences conserve both
+    /// assets exactly, with fees moving only to the configured treasury.
+    ///
+    /// Closes #1082.
     /// Property: Fee + party_a_amount always equals amount_b (no rounding loss)
     /// Closes #961 – swap fee calculation invariant
     #[test]
@@ -35,7 +100,7 @@ proptest! {
         amount_b in 100i128..=1_000_000i128,
         fee_bps in 0u32..=10_000u32,
     ) {
-        let fee = (amount_b * i128::from(fee_bps)) / 10_000;
+        let fee = calculate_and_validate_fee(amount_b, fee_bps).unwrap();
         let party_a_amount = amount_b - fee;
 
         // Invariant: no rounding loss
@@ -46,6 +111,28 @@ proptest! {
         // Invariant: both amounts non-negative
         prop_assert!(fee >= 0, "Negative fee: {}", fee);
         prop_assert!(party_a_amount >= 0, "Negative party_a amount: {}", party_a_amount);
+        prop_assert!(fee <= amount_b, "Fee cannot exceed total traded amount");
+    }
+
+    /// Property: Treasury fee cannot exceed total traded amount across split transactions
+    #[test]
+    fn prop_fee_invariance_split_transactions(
+        total_amount in 10i128..=10_000i128,
+        num_splits in 2usize..=10usize,
+        fee_bps in 1u32..=1_000u32,
+    ) {
+        let chunk = total_amount / num_splits as i128;
+        if chunk > 0 {
+            let mut total_split_fee = 0i128;
+            for _ in 0..num_splits {
+                let split_fee = calculate_and_validate_fee(chunk, fee_bps).unwrap();
+                prop_assert!(split_fee > 0, "Fee must be non-zero when fee_bps > 0");
+                prop_assert!(split_fee <= chunk, "Fee cannot exceed chunk size");
+                total_split_fee += split_fee;
+            }
+            prop_assert!(total_split_fee <= total_amount,
+                "Total fee from split transactions cannot exceed total traded volume");
+        }
     }
 
     /// Property: Total transferred out equals total transferred in
@@ -83,7 +170,9 @@ proptest! {
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &None,
+            &None,
         );
 
         if swap_id_result.is_err() {
@@ -100,7 +189,7 @@ proptest! {
             let tok_b = soroban_sdk::token::Client::new(&env, &token_b);
 
             // Calculate expected fee
-            let fee = (amount_b * i128::from(fee_bps)) / 10_000;
+            let fee = calculate_and_validate_fee(amount_b, fee_bps).unwrap();
             let party_a_net = amount_b - fee;
 
             // Verify balances
@@ -144,11 +233,36 @@ proptest! {
 
     /// Property: Cancelled swaps return funds to party_a
     #[test]
-    fn prop_cancel_returns_funds(
-        amount_a in 100i128..=10_000i128,
-        amount_b in 100i128..=10_000i128,
-    ) {
+    fn prop_swap_state_machine_preserves_balances(actions in commands()) {
         let env = Env::default();
+        let (client, party_a, party_b, treasury, token_a, token_b) = setup(&env);
+        assert_conservation(&env, &client, &party_a, &party_b, &treasury, &token_a, &token_b);
+
+        for action in actions {
+            match action {
+                Command::Propose { amount_a, amount_b } => {
+                    let expiry = env.ledger().sequence() + 100;
+                    let _ = client.try_propose_swap(
+                        &party_a, &token_a, &amount_a, &token_b, &amount_b, &expiry,
+                    );
+                }
+                Command::Accept { index } => {
+                    let count = client.swap_count();
+                    if count > 0 {
+                        let id = (index as u32) % count;
+                        let _ = client.try_accept_swap(&id, &party_b);
+                    }
+                }
+                Command::Cancel { index } => {
+                    let count = client.swap_count();
+                    if count > 0 {
+                        let id = (index as u32) % count;
+                        let _ = client.try_cancel_swap(&id);
+                    }
+                }
+            }
+            assert_conservation(&env, &client, &party_a, &party_b, &treasury, &token_a, &token_b);
+        }
         env.mock_all_auths();
         env.ledger().with_mut(|l| l.sequence_number = 100);
 
@@ -170,7 +284,9 @@ proptest! {
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &None,
+            &None,
         );
 
         if swap_id_result.is_err() {
@@ -222,7 +338,9 @@ proptest! {
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &None,
+            &None,
         );
 
         if swap_id_result.is_err() {

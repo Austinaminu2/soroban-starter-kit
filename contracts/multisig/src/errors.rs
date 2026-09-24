@@ -52,6 +52,10 @@ pub enum MultisigError {
     RateLimited = 21,
     /// Amounts must be positive (limits must be non-negative).
     InvalidAmount = 22,
+    /// Only the original proposer may cancel a proposal.
+    NotProposer = 14,
+    /// The signer has not signed the proposal, so there is nothing to revoke.
+    NotSigned = 15,
 }
 
 impl_display_error!(
@@ -78,4 +82,6 @@ impl_display_error!(
     DailyLimitExceeded  => "daily limit exceeded",
     RateLimited         => "rate limited",
     InvalidAmount       => "invalid amount",
+    NotProposer         => "not proposer",
+    NotSigned           => "not signed",
 );
