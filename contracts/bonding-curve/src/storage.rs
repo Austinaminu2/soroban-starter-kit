@@ -11,6 +11,7 @@ pub enum DataKey {
     Reserve,
     Supply,
     Price,
+    CurveBalance(Address),
     Slope,
     BasePrice,
     ConnectorWeightBps,
