@@ -34,6 +34,9 @@ pub enum DataKey {
     UnbondRequest(Address),
     /// Address that receives slashed tokens (treasury / burn).
     SlashDestination,
+    /// Reward tokens deposited while no stake was active, held until
+    /// stakers join (or reclaimed by the admin if the pool stays empty).
+    UndistributedRewards,
 }
 
 /// Scaling factor for reward-per-token fixed-point arithmetic.

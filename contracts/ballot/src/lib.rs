@@ -30,6 +30,11 @@
 //! `deregister_voter` (admin-only) removes a registered voter, but only while
 //! no vote has yet been cast.
 //!
+//! ## Quorum (#1126)
+//!
+//! `initialize` accepts a `quorum: u32` minimum turnout.  If fewer than
+//! `quorum` votes are cast, `tally_all()` returns
+//! [`BallotResult::QuorumNotMet`] instead of certifying the leading choice.
 //! ## Permissionless tally (#1121)
 //!
 //! Once `voting_end` has passed, tally calculation is permissionless: any
@@ -50,6 +55,15 @@ use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_i
 
 fn bump(env: &Env) {
     extend_ttl_instance(env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+}
+
+/// Outcome of a tally.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BallotResult {
+    /// Turnout met the configured quorum; carries the per-choice counts.
+    Certified(Vec<i128>),
+    /// Turnout was below the configured quorum; results are not certified.
+    QuorumNotMet,
 }
 
 /// Multi-choice on-chain ballot contract.
@@ -83,6 +97,9 @@ mod contract {
         /// `choices` must be non-empty.  The index of each element becomes the
         /// `choice` value accepted by `vote`.
         ///
+        /// `quorum` is the minimum number of votes that must be cast before
+        /// results can be certified.
+        ///
         /// # Errors
         /// - [`BallotError::AlreadyInitialized`] if called more than once.
         /// - [`BallotError::NoChoices`] if `choices` is empty.
@@ -94,6 +111,7 @@ mod contract {
             voting_start: u32,
             voting_end: u32,
             choices: Vec<String>,
+            quorum: u32,
         ) -> Result<(), BallotError> {
             if env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::AlreadyInitialized);
@@ -115,6 +133,7 @@ mod contract {
                 .instance()
                 .set(&DataKey::VotingEnd, &voting_end);
             env.storage().instance().set(&DataKey::TotalVotes, &0i128);
+            env.storage().instance().set(&DataKey::Quorum, &quorum);
 
             // Store the choices list.
             let choice_count = choices.len();
@@ -223,6 +242,8 @@ mod contract {
         ///
         /// # Errors
         /// - [`BallotError::NotInitialized`]
+        /// - [`BallotError::VotingNotStarted`] before the window opens.
+        /// - [`BallotError::VotingClosed`] after the window closes.
         /// - [`BallotError::VotingNotStarted`] before `voting_start`.
         /// - [`BallotError::VotingClosed`] after `voting_end`.
         /// - [`BallotError::NotRegistered`] if the voter is not registered.
@@ -272,6 +293,8 @@ mod contract {
             }
 
             let voted_key = DataKey::HasVoted(voter.clone());
+            let has_voted: bool = env.storage().persistent().get(&voted_key).unwrap_or(false);
+            if has_voted {
             if env.storage().persistent().has(&voted_key) {
                 return Err(BallotError::AlreadyVoted);
             }
@@ -317,6 +340,17 @@ mod contract {
             Ok(())
         }
 
+        /// Tally all choices and close voting.
+        ///
+        /// Returns [`BallotResult::QuorumNotMet`] if the number of votes cast
+        /// is below the quorum configured at `initialize`; otherwise returns
+        /// [`BallotResult::Certified`] with the per-choice counts in declaration
+        /// order.
+        ///
+        /// # Errors
+        /// - [`BallotError::NotInitialized`]
+        /// - [`BallotError::Unauthorized`] if the caller is not the admin.
+        pub fn tally_all(env: Env) -> Result<BallotResult, BallotError> {
         /// Read-only tally query.  Never requires auth and does not close the
         /// ballot.
         ///
@@ -333,6 +367,7 @@ mod contract {
                 .instance()
                 .get(&DataKey::Choices)
                 .ok_or(BallotError::NotInitialized)?;
+
             let mut results: Vec<i128> = Vec::new(&env);
             for i in 0..choices.len() {
                 let count: i128 = env
@@ -342,6 +377,35 @@ mod contract {
                     .unwrap_or(0i128);
                 results.push_back(count);
             }
+
+            env.storage().instance().set(&DataKey::VotingActive, &false);
+            bump(&env);
+
+            let total_votes: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalVotes)
+                .unwrap_or(0i128);
+            let quorum: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::Quorum)
+                .unwrap_or(0);
+            if total_votes < quorum as i128 {
+                return Ok(BallotResult::QuorumNotMet);
+            }
+
+            Ok(BallotResult::Certified(results))
+        }
+
+        /// Backward-compatible two-choice tally helper.
+        ///
+        /// Returns `(yes, no)` counts and closes voting.
+        ///
+        /// # Errors
+        /// - [`BallotError::NotInitialized`]
+        /// - [`BallotError::Unauthorized`] if the caller is not the admin.
+        pub fn tally(env: Env) -> Result<(i128, i128), BallotError> {
             Ok(results)
         }
 
@@ -367,6 +431,8 @@ mod contract {
                 .unwrap_or(0);
             let now = env.ledger().sequence();
 
+            let yes: i128 = env.storage().instance().get(&DataKey::YesVotes).unwrap_or(0i128);
+            let no: i128 = env.storage().instance().get(&DataKey::NoVotes).unwrap_or(0i128);
             // Permissionless once the voting window has closed; otherwise the
             // admin must authorize the early close.
             if now <= voting_end {
@@ -394,12 +460,62 @@ mod contract {
             }
 
             env.storage().instance().set(&DataKey::VotingActive, &false);
-
             bump(&env);
+            Ok((yes, no))
             events::tally_completed(&env, &results);
             Ok(results)
         }
+    }
+}
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{Env, String, Vec, testutils::Address as _};
+
+    fn setup(env: &Env, quorum: u32) -> (Address, BallotContractClient) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(BallotContract, ());
+        let client = BallotContractClient::new(env, &contract_id);
+        let mut choices: Vec<String> = Vec::new(env);
+        choices.push_back(String::from_str(env, "no"));
+        choices.push_back(String::from_str(env, "yes"));
+        client.initialize(&admin, &1u32, &100u32, &choices, &quorum);
+        (admin, client)
+    }
+
+    #[test]
+    fn tally_certifies_when_quorum_met() {
+        let env = Env::default();
+        let (_admin, client) = setup(&env, 2);
+        let v1 = Address::generate(&env);
+        let v2 = Address::generate(&env);
+        client.register_voter(&v1);
+        client.register_voter(&v2);
+        client.vote(&v1, &1u32);
+        client.vote(&v2, &0u32);
+
+        let result = client.tally_all();
+        match result {
+            BallotResult::Certified(counts) => {
+                assert_eq!(counts.get(0).unwrap(), 1);
+                assert_eq!(counts.get(1).unwrap(), 1);
+            }
+            BallotResult::QuorumNotMet => panic!("expected quorum to be met"),
+        }
+    }
+
+    #[test]
+    fn tally_fails_when_quorum_not_met() {
+        let env = Env::default();
+        let (_admin, client) = setup(&env, 3);
+        let v1 = Address::generate(&env);
+        client.register_voter(&v1);
+        client.vote(&v1, &1u32);
+
+        let result = client.tally_all();
+        assert_eq!(result, BallotResult::QuorumNotMet);
         /// Backward-compatible two-choice tally helper.
         ///
         /// Returns `(choice[1] votes, choice[0] votes)` i.e. `(yes, no)` and
