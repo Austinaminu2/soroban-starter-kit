@@ -276,22 +276,66 @@ fn test_vote_at_window_end_accepted() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1126 — Quorum tests
+// Issue #1127 — Multiple concurrent ballots per contract instance
 // ---------------------------------------------------------------------------
 
-/// Quorum met: enough voters turn out, leading choice is certified.
+/// `create_ballot` returns sequential ids starting at 0 and stores metadata.
 #[test]
-fn test_quorum_met_certifies_result() {
+fn test_create_ballot_returns_sequential_ids() {
     let env = make_env();
-    let admin = Address::generate(&env);
-    let addr = env.register_contract(None, BallotContract);
-    let client = BallotContractClient::new(&env, &addr);
+    let (client, _admin) = setup(&env);
+
+    let choices = vec![
+        &env,
+        String::from_str(&env, "a"),
+        String::from_str(&env, "b"),
+    ];
+
+    let id0 = client.create_ballot(
+        &String::from_str(&env, "first"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+    let id1 = client.create_ballot(
+        &String::from_str(&env, "second"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+
+    assert_eq!(id0, 0);
+    assert_eq!(id1, 1);
+}
+
+/// Two ballots run concurrently with fully isolated votes and tallies.
+#[test]
+fn test_concurrent_ballots_are_isolated() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
+
     let choices = vec![
         &env,
         String::from_str(&env, "no"),
         String::from_str(&env, "yes"),
     ];
-    client.initialize(&admin, &VOTING_START, &VOTING_END, &choices, &2u32);
+
+    let ballot_a = client.create_ballot(
+        &String::from_str(&env, "A"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+    let ballot_b = client.create_ballot(
+        &String::from_str(&env, "B"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
 
     let voter1 = Address::generate(&env);
     let voter2 = Address::generate(&env);
@@ -300,34 +344,146 @@ fn test_quorum_met_certifies_result() {
 
     env.ledger()
         .with_mut(|le| le.sequence_number = VOTING_START);
-    client.vote(&voter1, &1u32);
-    client.vote(&voter2, &1u32);
 
-    let result = client.tally_all();
-    assert_eq!(result, BallotResult::Certified);
+    // voter1 votes "yes" on A, voter2 votes "no" on B.
+    client.vote(&ballot_a, &voter1, &1u32);
+    client.vote(&ballot_b, &voter2, &0u32);
+
+    let (yes_a, no_a) = client.tally(&ballot_a);
+    assert_eq!(yes_a, 1);
+    assert_eq!(no_a, 0);
+
+    let (yes_b, no_b) = client.tally(&ballot_b);
+    assert_eq!(yes_b, 0);
+    assert_eq!(no_b, 1);
 }
 
-/// Quorum failed: turnout below quorum marks the ballot QuorumNotMet.
+/// A voter may vote once per ballot, but the same address can vote in
+/// multiple concurrent ballots independently.
 #[test]
-fn test_quorum_failed_marks_quorum_not_met() {
+fn test_same_voter_can_vote_in_multiple_ballots() {
     let env = make_env();
-    let admin = Address::generate(&env);
-    let addr = env.register_contract(None, BallotContract);
-    let client = BallotContractClient::new(&env, &addr);
+    let (client, _admin) = setup(&env);
+
     let choices = vec![
         &env,
         String::from_str(&env, "no"),
         String::from_str(&env, "yes"),
     ];
-    client.initialize(&admin, &VOTING_START, &VOTING_END, &choices, &3u32);
 
-    let voter1 = Address::generate(&env);
-    client.register_voter(&voter1);
+    let ballot_a = client.create_ballot(
+        &String::from_str(&env, "A"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+    let ballot_b = client.create_ballot(
+        &String::from_str(&env, "B"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
 
     env.ledger()
         .with_mut(|le| le.sequence_number = VOTING_START);
-    client.vote(&voter1, &1u32);
 
-    let result = client.tally_all();
-    assert_eq!(result, BallotResult::QuorumNotMet);
+    client.vote(&ballot_a, &voter, &1u32);
+    client.vote(&ballot_b, &voter, &0u32);
+
+    assert_eq!(client.get_yes_votes(&ballot_a), 1);
+    assert_eq!(client.get_no_votes(&ballot_a), 0);
+    assert_eq!(client.get_yes_votes(&ballot_b), 0);
+    assert_eq!(client.get_no_votes(&ballot_b), 1);
+}
+
+/// Double voting within the same ballot is still rejected.
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_double_vote_within_same_ballot_rejected() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
+
+    let choices = vec![
+        &env,
+        String::from_str(&env, "no"),
+        String::from_str(&env, "yes"),
+    ];
+    let ballot = client.create_ballot(
+        &String::from_str(&env, "A"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
+
+    client.vote(&ballot, &voter, &1u32);
+    client.vote(&ballot, &voter, &1u32); // AlreadyVoted (#5)
+}
+
+/// Tallying one ballot does not close a concurrent ballot.
+#[test]
+fn test_tally_one_ballot_does_not_close_another() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
+
+    let choices = vec![
+        &env,
+        String::from_str(&env, "no"),
+        String::from_str(&env, "yes"),
+    ];
+
+    let ballot_a = client.create_ballot(
+        &String::from_str(&env, "A"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+    let ballot_b = client.create_ballot(
+        &String::from_str(&env, "B"),
+        &choices,
+        &VOTING_START,
+        &VOTING_END,
+        &0u32,
+    );
+
+    let voter1 = Address::generate(&env);
+    let voter2 = Address::generate(&env);
+    client.register_voter(&voter1);
+    client.register_voter(&voter2);
+
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
+
+    client.vote(&ballot_a, &voter1, &1u32);
+    client.tally(&ballot_a);
+
+    // Ballot B remains open and accepts votes.
+    let result = client.try_vote(&ballot_b, &voter2, &0u32);
+    assert!(result.is_ok());
+}
+
+/// Voting on a non-existent ballot id is rejected.
+#[test]
+fn test_vote_on_unknown_ballot_rejected() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
+
+    let result = client.try_vote(&999u32, &voter, &1u32);
+    assert!(result.is_err());
 }

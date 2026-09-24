@@ -27,4 +27,25 @@ pub enum DataKey {
     Choices,
     /// Vote tally for choice at the given index.
     ChoiceVotes(u32),
+    // ── multi-ballot additions (#1127) ─────────────────────────────────────
+    /// Number of ballots created so far; also the next ballot id to assign.
+    BallotCount,
+    /// Title of the ballot with the given id.
+    BallotTitle(u32),
+    /// Ordered list of choice labels for the ballot with the given id.
+    BallotChoices(u32),
+    /// First ledger sequence at which the given ballot's voting is open.
+    BallotStart(u32),
+    /// Last ledger sequence at which the given ballot's voting is open.
+    BallotEnd(u32),
+    /// Minimum voter turnout required for the given ballot.
+    BallotQuorum(u32),
+    /// Whether the given ballot is currently active.
+    BallotActive(u32),
+    /// Running count of total votes cast in the given ballot.
+    BallotTotalVotes(u32),
+    /// Vote tally for a choice index within the given ballot.
+    BallotChoiceVotes(u32, u32),
+    /// Whether the given voter has already voted in the given ballot.
+    BallotVoter(u32, Address),
 }
