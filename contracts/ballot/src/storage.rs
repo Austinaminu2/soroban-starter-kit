@@ -1,7 +1,7 @@
 // `#[contracttype]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
-use soroban_sdk::{Address, String, Vec, contracttype};
+use soroban_sdk::{Address, BytesN, String, Vec, contracttype};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -33,6 +33,16 @@ pub enum DataKey {
     RankedVote(Address),
     /// Number of ranked-choice ballots cast; used to size elimination rounds.
     RankedVoteCount,
+    // ── commit-reveal additions (#1125) ────────────────────────────────────
+    /// Whether commit-reveal secret voting mode is enabled for this ballot.
+    CommitReveal,
+    /// Commitment hash `hash(voter ++ choice ++ salt)` submitted during the
+    /// commit phase, keyed by voter.  The choice stays secret until reveal.
+    Commitment(Address),
+    /// Whether a voter has revealed their committed ballot.
+    Revealed(Address),
+    /// Number of commitments submitted; used to gate the reveal phase.
+    CommitCount,
 }
 
 /// A single instant-runoff elimination round result.
@@ -46,4 +56,14 @@ pub struct RoundResult {
     pub eliminated: Option<u32>,
     /// Choice that reached a majority in this round, if any.
     pub winner: Option<u32>,
+}
+
+/// A stored commit-reveal commitment for a single voter.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Commitment {
+    /// `hash(voter ++ choice ++ salt)` submitted during the commit phase.
+    pub hash: BytesN<32>,
+    /// Ledger sequence at which the commitment was recorded.
+    pub committed_at: u32,
 }

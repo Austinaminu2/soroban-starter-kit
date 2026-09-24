@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Symbol, Vec};
+use soroban_sdk::{Address, BytesN, Env, Symbol, Vec};
 
 pub fn initialized(env: &Env, admin: &Address) {
     env.events().publish((Symbol::new(env, "initialized"),), admin.clone());
@@ -33,6 +33,26 @@ pub fn voter_deregistered(env: &Env, voter: &Address) {
 pub fn voted(env: &Env, voter: &Address, choice: u32) {
     env.events()
         .publish((Symbol::new(env, "voted"),), (voter.clone(), choice));
+}
+
+/// Emitted by `commit_vote` (#1125).
+/// Only the commitment hash is published; the voter's choice stays secret
+/// until the reveal phase, preventing bandwagoning and vote bribery.
+pub fn vote_committed(env: &Env, voter: &Address, commitment: &BytesN<32>) {
+    env.events().publish(
+        (Symbol::new(env, "vote_committed"),),
+        (voter.clone(), commitment.clone()),
+    );
+}
+
+/// Emitted by `reveal_vote` (#1125).
+/// Published only after the commitment is verified against the revealed
+/// `(choice, salt)` preimage.
+pub fn vote_revealed(env: &Env, voter: &Address, choice: u32) {
+    env.events().publish(
+        (Symbol::new(env, "vote_revealed"),),
+        (voter.clone(), choice),
+    );
 }
 
 /// Emitted by `tally` (binary ballot, backward compat).

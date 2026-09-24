@@ -1,7 +1,8 @@
 // `#[contracttype]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
-use soroban_sdk::{Address, Env, String, Vec, contract, contractimpl, symbol_short};
+use soroban_common::commit_hash;
+use soroban_sdk::{Address, Bytes, BytesN, Env, String, Vec, contract, contractimpl};
 
 mod events;
 mod storage;
@@ -21,6 +22,8 @@ impl BallotContract {
         env.storage().instance().set(&DataKey::VotingActive, &false);
         env.storage().instance().set(&DataKey::TotalVotes, &0u32);
         env.storage().instance().set(&DataKey::RankedVoteCount, &0u32);
+        env.storage().instance().set(&DataKey::CommitPhase, &false);
+        env.storage().instance().set(&DataKey::RevealPhase, &false);
     }
 
     /// Register a voter.
@@ -31,6 +34,71 @@ impl BallotContract {
             .persistent()
             .set(&DataKey::RegisteredVoter(voter.clone()), &true);
         events::voter_registered(&env, &voter);
+    }
+
+    /// Open the commit phase of the commit-reveal ballot.
+    pub fn start_commit_phase(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::CommitPhase, &true);
+        env.storage().instance().set(&DataKey::RevealPhase, &false);
+        env.storage().instance().set(&DataKey::VotingActive, &true);
+    }
+
+    /// Close the commit phase and open the reveal phase.
+    pub fn start_reveal_phase(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::CommitPhase, &false);
+        env.storage().instance().set(&DataKey::RevealPhase, &true);
+    }
+
+    /// Phase 1: commit `hash(voter ++ choice ++ salt)` without revealing the choice.
+    pub fn commit_vote(env: Env, voter: Address, commitment: BytesN<32>) {
+        voter.require_auth();
+        Self::require_registered(&env, &voter);
+        Self::require_commit_phase(&env);
+        let key = DataKey::Commitment(voter.clone());
+        if env.storage().persistent().has(&key) {
+            panic!("voter has already committed a ballot");
+        }
+        env.storage().persistent().set(&key, &commitment);
+        events::vote_committed(&env, &voter);
+    }
+
+    /// Phase 2: reveal `(choice, salt)` and validate against the commitment.
+    pub fn reveal_vote(env: Env, voter: Address, choice: u32, salt: Bytes) {
+        voter.require_auth();
+        Self::require_registered(&env, &voter);
+        Self::require_reveal_phase(&env);
+
+        let key = DataKey::Commitment(voter.clone());
+        let commitment: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic!("no commitment found for voter"));
+
+        let mut preimage = Bytes::new(&env);
+        preimage.append(&voter.clone().to_bytes());
+        preimage.extend_from_array(&choice.to_be_bytes());
+        preimage.append(&salt);
+        let computed = commit_hash(&env, &preimage);
+        if computed != commitment {
+            panic!("revealed ballot does not match commitment");
+        }
+
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Revealed(voter.clone()), &true);
+
+        let vote_key = DataKey::ChoiceVotes(choice);
+        let current: u32 = env.storage().persistent().get(&vote_key).unwrap_or(0);
+        env.storage().persistent().set(&vote_key, &(current + 1));
+        let total: u32 = env.storage().instance().get(&DataKey::TotalVotes).unwrap_or(0);
+        env.storage().instance().set(&DataKey::TotalVotes, &(total + 1));
+        events::vote_revealed(&env, &voter, choice);
     }
 
     /// Cast a binary vote (choice index 0 = no, 1 = yes).
@@ -160,6 +228,28 @@ impl BallotContract {
             .unwrap_or(false);
         if !active {
             panic!("voting is not active");
+        }
+    }
+
+    fn require_commit_phase(env: &Env) {
+        let active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::CommitPhase)
+            .unwrap_or(false);
+        if !active {
+            panic!("commit phase is not active");
+        }
+    }
+
+    fn require_reveal_phase(env: &Env) {
+        let active: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::RevealPhase)
+            .unwrap_or(false);
+        if !active {
+            panic!("reveal phase is not active");
         }
     }
 }
