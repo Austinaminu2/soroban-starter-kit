@@ -562,7 +562,7 @@ fn test_marketplace_full_lifecycle_with_royalty() {
     assert_eq!(listing.active, true);
 
     // Buyer purchases the NFT
-    marketplace.buy(&buyer, &listing_id);
+    marketplace.buy(&buyer, &listing_id, &price);
 
     // Verify NFT ownership transferred to buyer
     assert_eq!(nft.owner_of(&token_id), buyer);
@@ -1080,7 +1080,7 @@ fn test_marketplace_nft_token_end_to_end() {
     assert!(listing.active);
 
     // ── Buyer purchases the NFT ──────────────────────────────────────────
-    marketplace.buy(&buyer, &listing_id);
+    marketplace.buy(&buyer, &listing_id, &price);
 
     // ── Assert NFT ownership transferred ────────────────────────────────
     assert_eq!(nft.owner_of(&token_id), buyer);
@@ -1174,7 +1174,7 @@ fn test_marketplace_nft_token_with_per_token_royalty() {
     // ── List and buy ─────────────────────────────────────────────────────
     nft.approve(&token_id, &marketplace_addr);
     let listing_id = marketplace.list(&seller, &nft_addr_raw, &token_id, &sale_price);
-    marketplace.buy(&buyer, &listing_id);
+    marketplace.buy(&buyer, &listing_id, &sale_price);
 
     // Buyer owns the NFT
     assert_eq!(nft.owner_of(&token_id), buyer);

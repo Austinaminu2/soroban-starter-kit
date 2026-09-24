@@ -1989,6 +1989,7 @@ dependencies = [
 name = "soroban-marketplace-template"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-common",
  "soroban-sdk",
 ]
@@ -2134,6 +2135,7 @@ dependencies = [
  "soroban-airdrop-template",
  "soroban-escrow-template",
  "soroban-lottery-template",
+ "soroban-marketplace-template",
  "soroban-oracle-template",
  "soroban-sdk",
  "soroban-swap-template",

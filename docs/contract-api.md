@@ -551,12 +551,22 @@ Commit-reveal randomness: `commit` locks in `hash(secret ++ salt)` and a reveal 
 |----------|-----------|---------|--------|
 | `initialize` | `env: Env, admin: Address, payment_token: Address, royalty_bps: u32, royalty_recipient: Address` | `Result<(), MarketplaceError>` | `AlreadyInitialized`, `InvalidRoyalty` |
 | `list` | `env: Env, seller: Address, token_id: u32, price: i128` | `Result<u64, MarketplaceError>` | `NotInitialized`, `NotAuthorized` |
-| `buy` | `env: Env, buyer: Address, listing_id: u64, payment_amount: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `InvalidPrice` |
+| `buy` | `env: Env, buyer: Address, listing_id: u64, max_price: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `ListingExpired`, `PriceExceedsMax` |
 | `cancel` | `env: Env, caller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive` |
 | `cancel_offer` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `OfferNotFound` |
 | `get_listing` | `env: Env, listing_id: u64` | `Option<Listing>` | None |
 | `get_offer` | `env: Env, listing_id: u64, buyer: Address` | `Option<i128>` | None |
 | `get_active_listings` | `env: Env, cursor: u64, limit: u32` | `ListingPage` | None |
+| `make_collection_offer` | `env: Env, buyer: Address, nft_contract: Address, amount: i128, expires_at: u32` | `Result<u64, MarketplaceError>` | `NotInitialized`, `InvalidOfferAmount`, `InvalidExpiry` |
+| `accept_collection_offer` | `env: Env, seller: Address, offer_id: u64, token_id: u32` | `Result<(), MarketplaceError>` | `NotInitialized`, `CollectionOfferNotFound`, `CollectionOfferExpired`, `NotAuthorized` |
+| `cancel_collection_offer` | `env: Env, buyer: Address, offer_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `CollectionOfferNotFound`, `NotAuthorized` |
+| `get_collection_offer` | `env: Env, offer_id: u64` | `Option<CollectionOffer>` | None |
+| `set_royalty_splits` | `env: Env, admin: Address, splits: Vec<(Address, u32)>` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `InvalidRoyalty` |
+| `get_royalty_splits` | `env: Env` | `Vec<(Address, u32)>` | None |
+
+`buy` takes a `max_price` slippage bound: pass the price you observed; the call fails with `PriceExceedsMax` if the listing price is higher when it executes.
+
+`set_royalty_splits` splits the marketplace royalty across up to 10 `(recipient, bps)` entries whose basis points sum to the total royalty (≤ 10 000). A royalty returned by the NFT contract's `royalty_info` still takes priority.
 
 **Not currently reachable through a working entry point:** making an offer (an `Offer` is only ever read/cancelled, never created) and accepting an offer (the intended logic exists but is bound to a duplicate, misnamed `get_active_listings` definition rather than its own function).
 

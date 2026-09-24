@@ -40,6 +40,26 @@ This document outlines the front-running and MEV attack vectors identified in th
 - Proposers have granular control over `expires_at` ledger limits to specify short execution time horizons.
 - Swaps automatically expire if not completed within the designated ledger interval, with assets safely reclaimable via `cancel_swap`.
 
+### Risk: Price Change Before Purchase (#1101)
+
+**Description:** A seller could cancel and re-list at a higher price (or otherwise change the effective price) between the time a buyer signs a `buy` transaction and the time it executes.
+
+**Mitigations Applied:**
+- `buy(buyer, listing_id, max_price)` requires the buyer to state the maximum price they will pay
+- The purchase is rejected with `PriceExceedsMax` if `listing.price > max_price`; no funds or NFT move
+
+### Risk: Listing Expiry Manipulation
+
+**Description:** A buyer could observe a pending listing creation and front-run with a purchase before the seller can set an expiry.
+
+**Mitigations Applied:**
+- Listings are active immediately upon creation
+- Expiry is set at listing time and cannot be shortened
+- sweep_expired allows sellers to reclaim expired listings
+
+**Recommendations:**
+- Consider allowing sellers to set an expiry after listing creation
+- Document the expiry behavior clearly
 ### 4. Non-Zero Fee Floor Policy (`calculate_and_validate_fee`)
 - Enforces that whenever protocol `fee_bps > 0`, the computed fee is clamped to a minimum non-zero value ($1$ unit of token) on trades with $amount > 0$.
 - Invariant guarantee: `fee <= amount_b` ensures that treasury fees never exceed total traded amounts.

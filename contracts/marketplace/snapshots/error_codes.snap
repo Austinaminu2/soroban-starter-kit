@@ -10,3 +10,6 @@ MarketplaceError::ListingExpired = 9
 MarketplaceError::ListingNotExpired = 10
 MarketplaceError::InvalidOfferAmount = 11
 MarketplaceError::OfferNotFound = 12
+MarketplaceError::PriceExceedsMax = 13
+MarketplaceError::CollectionOfferNotFound = 14
+MarketplaceError::CollectionOfferExpired = 15
