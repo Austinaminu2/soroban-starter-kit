@@ -393,3 +393,8 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 ---
 
 **Ready to build on Soroban?** Start with any template and customize it for your use case! 🚀
+
+## Handsoff notes
+
+<!-- handsoff-issue-1025 -->
+- #1025: Root Cargo.toml lists "contracts/ballot" as a workspace member twice
