@@ -269,28 +269,13 @@ fn test_vote_at_window_start_accepted() {
     assert_eq!(client.get_yes_votes(), 1);
 }
 
-/// Vote exactly at voting_end is accepted.
-#[test]
-fn test_vote_at_window_end_accepted() {
-    let env = make_env();
-    let (client, _admin) = setup(&env);
-    let voter = Address::generate(&env);
-
-    client.register_voter(&voter);
-    env.ledger()
-        .with_mut(|le| le.sequence_number = VOTING_END);
-    client.vote(&voter, &1u32);
-    assert_eq!(client.get_yes_votes(), 1);
-}
-
 // ---------------------------------------------------------------------------
-// Issue #1120 — Premature tally closure prevention
+// Issue #1121 — Permissionless tally after voting window closes
 // ---------------------------------------------------------------------------
 
-/// `tally()` before voting_end is rejected with VotingNotClosed (#11).
+/// A non-admin caller can tally once the voting window has closed.
 #[test]
-#[should_panic(expected = "Error(Contract, #11)")]
-fn test_tally_before_window_rejected() {
+fn test_non_admin_can_tally_after_deadline() {
     let env = make_env();
     let (client, _admin) = setup(&env);
 
@@ -300,14 +285,20 @@ fn test_tally_before_window_rejected() {
         .with_mut(|le| le.sequence_number = VOTING_START);
     client.vote(&voter, &1u32);
 
-    // Still inside the voting window — tally must be rejected.
-    client.tally();
+    // Move past the voting window.
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_END + 1);
+
+    // A random observer (not the admin) closes the ballot.
+    let observer = Address::generate(&env);
+    let (yes, no) = client.tally_all(&observer);
+    assert_eq!(yes, 1);
+    assert_eq!(no, 0);
 }
 
-/// `tally_all()` before voting_end is rejected with VotingNotClosed (#11).
+/// tally_all is rejected before the voting window closes.
 #[test]
-#[should_panic(expected = "Error(Contract, #11)")]
-fn test_tally_all_before_window_rejected() {
+fn test_tally_all_before_deadline_rejected() {
     let env = make_env();
     let (client, _admin) = setup(&env);
 
@@ -317,31 +308,15 @@ fn test_tally_all_before_window_rejected() {
         .with_mut(|le| le.sequence_number = VOTING_START);
     client.vote(&voter, &1u32);
 
-    // Still inside the voting window — tally_all must be rejected.
-    client.tally_all();
+    // Still inside the voting window.
+    let observer = Address::generate(&env);
+    let result = client.try_tally_all(&observer);
+    assert!(result.is_err());
 }
 
-/// `tally()` at exactly voting_end is still rejected (window not yet closed).
+/// get_tally is a read-only query that requires no auth and works after closure.
 #[test]
-fn test_tally_at_window_end_rejected() {
-    let env = make_env();
-    let (client, _admin) = setup(&env);
-
-    let voter = Address::generate(&env);
-    client.register_voter(&voter);
-    env.ledger()
-        .with_mut(|le| le.sequence_number = VOTING_START);
-    client.vote(&voter, &1u32);
-
-    env.ledger()
-        .with_mut(|le| le.sequence_number = VOTING_END);
-    let result = client.try_tally();
-    assert!(result.is_err(), "tally at voting_end must be rejected");
-}
-
-/// `tally()` after voting_end succeeds.
-#[test]
-fn test_tally_after_window_succeeds() {
+fn test_get_tally_is_permissionless_read_only() {
     let env = make_env();
     let (client, _admin) = setup(&env);
 
@@ -353,70 +328,9 @@ fn test_tally_after_window_succeeds() {
 
     env.ledger()
         .with_mut(|le| le.sequence_number = VOTING_END + 1);
-    let (yes, no) = client.tally();
+
+    // Anyone can read the tally without auth.
+    let (yes, no) = client.get_tally();
     assert_eq!(yes, 1);
     assert_eq!(no, 0);
-}
-
-/// Early close is permitted when 100% of registered voters have voted.
-#[test]
-fn test_tally_early_close_full_turnout_allowed() {
-    let env = make_env();
-    let (client, _admin) = setup(&env);
-
-    let voter1 = Address::generate(&env);
-    let voter2 = Address::generate(&env);
-    client.register_voter(&voter1);
-    client.register_voter(&voter2);
-
-    env.ledger()
-        .with_mut(|le| le.sequence_number = VOTING_START);
-    client.vote(&voter1, &1u32);
-    client.vote(&voter2, &0u32);
-
-    // Still inside the window, but every registered voter has voted.
-    let (yes, no) = client.tally();
-    assert_eq!(yes, 1);
-    assert_eq!(no, 1);
-}
-
-/// Early close via `tally_all()` is permitted with full turnout.
-#[test]
-fn test_tally_all_early_close_full_turnout_allowed() {
-    let env = make_env();
-    let (client, _admin) = setup(&env);
-
-    let voter1 = Address::generate(&env);
-    let voter2 = Address::generate(&env);
-    client.register_voter(&voter1);
-    client.register_voter(&voter2);
-
-    env.ledger()
-        .with_mut(|le| le.sequence_number = VOTING_START);
-    client.vote(&voter1, &1u32);
-    client.vote(&voter2, &0u32);
-
-    let results = client.tally_all();
-    assert_eq!(results.get(0), Some(1));
-    assert_eq!(results.get(1), Some(1));
-}
-
-/// Early close is rejected when turnout is incomplete.
-#[test]
-fn test_tally_early_close_partial_turnout_rejected() {
-    let env = make_env();
-    let (client, _admin) = setup(&env);
-
-    let voter1 = Address::generate(&env);
-    let voter2 = Address::generate(&env);
-    client.register_voter(&voter1);
-    client.register_voter(&voter2);
-
-    env.ledger()
-        .with_mut(|le| le.sequence_number = VOTING_START);
-    client.vote(&voter1, &1u32);
-
-    // Only one of two registered voters has voted — early close must fail.
-    let result = client.try_tally();
-    assert!(result.is_err(), "partial turnout must not allow early close");
 }

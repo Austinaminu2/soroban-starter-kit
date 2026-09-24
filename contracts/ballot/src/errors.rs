@@ -19,6 +19,7 @@ pub enum BallotError {
     VotingNotStarted = 10,
     NoChoices = 11,
     VotingNotClosed = 12,
+    TallyNotAvailable = 13,
 }
 
 impl_display_error!(
@@ -35,4 +36,5 @@ impl_display_error!(
     VotingNotStarted     => "voting not started",
     NoChoices            => "no choices provided",
     VotingNotClosed      => "voting window has not closed",
+    TallyNotAvailable    => "tally not available",
 );
