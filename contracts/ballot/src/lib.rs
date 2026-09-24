@@ -35,6 +35,12 @@
 //! `initialize` accepts a `quorum: u32` minimum turnout.  If fewer than
 //! `quorum` votes are cast, `tally_all()` returns
 //! [`BallotResult::QuorumNotMet`] instead of certifying the leading choice.
+//! ## Permissionless tally (#1121)
+//!
+//! Once `voting_end` has passed, tally calculation is permissionless: any
+//! caller may invoke `tally_all()` / `tally()` to close the ballot and emit
+//! [`events::TallyCompleted`].  `get_tally()` is a read-only query that never
+//! requires auth.
 
 use soroban_sdk::{Address, Env, String, Vec, contract, contractimpl};
 
@@ -67,8 +73,8 @@ pub enum BallotResult {
 /// 2. Admin calls `register_voter` to add voters.  Mistakes may be undone with
 ///    `deregister_voter` before any vote is cast.
 /// 3. Voters call `vote(voter, choice_index)` within the voting window.
-/// 4. Admin calls `tally_all()` (or `tally()` for two-choice ballots) to get
-///    final results and close voting.
+/// 4. Anyone calls `tally_all()` (or `tally()` for two-choice ballots) once the
+///    voting window has closed to get final results and close voting.
 pub use contract::*;
 
 // The `#[contract]` / `#[contractimpl]` macros generate an undocumented public
@@ -238,6 +244,8 @@ mod contract {
         /// - [`BallotError::NotInitialized`]
         /// - [`BallotError::VotingNotStarted`] before the window opens.
         /// - [`BallotError::VotingClosed`] after the window closes.
+        /// - [`BallotError::VotingNotStarted`] before `voting_start`.
+        /// - [`BallotError::VotingClosed`] after `voting_end`.
         /// - [`BallotError::NotRegistered`] if the voter is not registered.
         /// - [`BallotError::AlreadyVoted`] if the voter has already voted.
         /// - [`BallotError::InvalidChoice`] if `choice` is out of range.
@@ -287,6 +295,7 @@ mod contract {
             let voted_key = DataKey::HasVoted(voter.clone());
             let has_voted: bool = env.storage().persistent().get(&voted_key).unwrap_or(false);
             if has_voted {
+            if env.storage().persistent().has(&voted_key) {
                 return Err(BallotError::AlreadyVoted);
             }
 
@@ -342,17 +351,17 @@ mod contract {
         /// - [`BallotError::NotInitialized`]
         /// - [`BallotError::Unauthorized`] if the caller is not the admin.
         pub fn tally_all(env: Env) -> Result<BallotResult, BallotError> {
+        /// Read-only tally query.  Never requires auth and does not close the
+        /// ballot.
+        ///
+        /// Returns per-choice vote counts in declaration order.
+        ///
+        /// # Errors
+        /// - [`BallotError::NotInitialized`] if the contract has not been initialized.
+        pub fn get_tally(env: Env) -> Result<Vec<i128>, BallotError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::NotInitialized);
             }
-
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Admin)
-                .ok_or(BallotError::NotInitialized)?;
-            admin.require_auth();
-
             let choices: Vec<String> = env
                 .storage()
                 .instance()
@@ -397,23 +406,64 @@ mod contract {
         /// - [`BallotError::NotInitialized`]
         /// - [`BallotError::Unauthorized`] if the caller is not the admin.
         pub fn tally(env: Env) -> Result<(i128, i128), BallotError> {
+            Ok(results)
+        }
+
+        /// Returns per-choice vote counts in declaration order and closes the
+        /// ballot.
+        ///
+        /// Once `voting_end` has passed this is permissionless: any caller may
+        /// close the ballot.  Before the deadline only the admin may call it.
+        ///
+        /// # Errors
+        /// - [`BallotError::NotInitialized`]
+        /// - [`BallotError::Unauthorized`] if called before `voting_end` by a
+        ///   non-admin.
+        pub fn tally_all(env: Env) -> Result<Vec<i128>, BallotError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::NotInitialized);
             }
 
-            let admin: Address = env
+            let voting_end: u32 = env
                 .storage()
                 .instance()
-                .get(&DataKey::Admin)
-                .ok_or(BallotError::NotInitialized)?;
-            admin.require_auth();
+                .get(&DataKey::VotingEnd)
+                .unwrap_or(0);
+            let now = env.ledger().sequence();
 
             let yes: i128 = env.storage().instance().get(&DataKey::YesVotes).unwrap_or(0i128);
             let no: i128 = env.storage().instance().get(&DataKey::NoVotes).unwrap_or(0i128);
+            // Permissionless once the voting window has closed; otherwise the
+            // admin must authorize the early close.
+            if now <= voting_end {
+                let admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Admin)
+                    .ok_or(BallotError::NotInitialized)?;
+                admin.require_auth();
+            }
+
+            let choices: Vec<String> = env
+                .storage()
+                .instance()
+                .get(&DataKey::Choices)
+                .ok_or(BallotError::NotInitialized)?;
+            let mut results: Vec<i128> = Vec::new(&env);
+            for i in 0..choices.len() {
+                let count: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::ChoiceVotes(i))
+                    .unwrap_or(0i128);
+                results.push_back(count);
+            }
 
             env.storage().instance().set(&DataKey::VotingActive, &false);
             bump(&env);
             Ok((yes, no))
+            events::tally_completed(&env, &results);
+            Ok(results)
         }
     }
 }
@@ -466,5 +516,20 @@ mod test {
 
         let result = client.tally_all();
         assert_eq!(result, BallotResult::QuorumNotMet);
+        /// Backward-compatible two-choice tally helper.
+        ///
+        /// Returns `(choice[1] votes, choice[0] votes)` i.e. `(yes, no)` and
+        /// closes the ballot.  Permissionless once `voting_end` has passed.
+        ///
+        /// # Errors
+        /// - [`BallotError::NotInitialized`]
+        /// - [`BallotError::Unauthorized`] if called before `voting_end` by a
+        ///   non-admin.
+        pub fn tally(env: Env) -> Result<(i128, i128), BallotError> {
+            let results = Self::tally_all(env.clone())?;
+            let yes = results.get(1).unwrap_or(0i128);
+            let no = results.get(0).unwrap_or(0i128);
+            Ok((yes, no))
+        }
     }
 }

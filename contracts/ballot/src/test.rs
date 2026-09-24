@@ -67,6 +67,10 @@ fn test_ballot_lifecycle() {
     assert_eq!(client.get_yes_votes(), 1);
     assert_eq!(client.get_no_votes(), 1);
 
+    // Advance past the voting window before tallying.
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_END + 1);
+
     let (yes, no) = client.tally();
     assert_eq!(yes, 1);
     assert_eq!(no, 1);
@@ -205,13 +209,17 @@ fn test_tally_closes_voting() {
     env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
     client.vote(&voter, &1u32);
 
+    // Advance past the voting window before tallying.
+    env.ledger()
+        .with_mut(|l| l.sequence_number = VOTING_END + 1);
+
     client.tally();
 
     // After tally, voting is closed — new votes should fail
     let voter2 = Address::generate(&env);
     client.register_voter(&voter2);
     env.ledger()
-        .with_mut(|l| l.sequence_number = VOTING_START + 1);
+        .with_mut(|l| l.sequence_number = VOTING_END + 2);
     let result = client.try_vote(&voter2, &0u32);
     assert!(result.is_err());
 }
@@ -341,7 +349,23 @@ fn test_concurrent_ballots_are_isolated() {
     let voter2 = Address::generate(&env);
     client.register_voter(&voter1);
     client.register_voter(&voter2);
+// ---------------------------------------------------------------------------
+// Issue #1121 — Permissionless tally after voting window closes
+// ---------------------------------------------------------------------------
 
+/// A non-admin caller can tally once the voting window has closed.
+#[test]
+fn test_non_admin_can_tally_after_deadline() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
+    client.vote(&voter, &1u32);
+
+    // Move past the voting window.
     env.ledger()
         .with_mut(|le| le.sequence_number = VOTING_START);
 
@@ -420,6 +444,20 @@ fn test_double_vote_within_same_ballot_rejected() {
         &VOTING_END,
         &0u32,
     );
+        .with_mut(|le| le.sequence_number = VOTING_END + 1);
+
+    // A random observer (not the admin) closes the ballot.
+    let observer = Address::generate(&env);
+    let (yes, no) = client.tally_all(&observer);
+    assert_eq!(yes, 1);
+    assert_eq!(no, 0);
+}
+
+/// tally_all is rejected before the voting window closes.
+#[test]
+fn test_tally_all_before_deadline_rejected() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
 
     let voter = Address::generate(&env);
     client.register_voter(&voter);
@@ -486,4 +524,31 @@ fn test_vote_on_unknown_ballot_rejected() {
 
     let result = client.try_vote(&999u32, &voter, &1u32);
     assert!(result.is_err());
+    client.vote(&voter, &1u32);
+
+    // Still inside the voting window.
+    let observer = Address::generate(&env);
+    let result = client.try_tally_all(&observer);
+    assert!(result.is_err());
+}
+
+/// get_tally is a read-only query that requires no auth and works after closure.
+#[test]
+fn test_get_tally_is_permissionless_read_only() {
+    let env = make_env();
+    let (client, _admin) = setup(&env);
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
+    client.vote(&voter, &1u32);
+
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_END + 1);
+
+    // Anyone can read the tally without auth.
+    let (yes, no) = client.get_tally();
+    assert_eq!(yes, 1);
+    assert_eq!(no, 0);
 }
