@@ -1273,6 +1273,96 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 **Resolution:** Every signer must have a weight of at least `1`.
 
+---
+
+### `Reentrant` (code 14)
+
+**Description:** A state-changing entry point was called while the wallet was dispatching an external contract call.
+
+**Common cause:** A proposal target (or token) re-entering the multisig to execute other proposals, spend the allowance, or change signers/configuration.
+
+**Resolution:** Reentrancy is never permitted; perform the follow-up action in a separate transaction.
+
+---
+
+### `TimelockNotElapsed` (code 15)
+
+**Description:** The proposal is queued but `queued_ledger + timelock_delay` has not yet passed.
+
+**Common cause:** Calling `execute_transaction` too soon after the proposal reached threshold.
+
+**Resolution:** Wait until the ledger reported by the `queued` event, then execute.
+
+---
+
+### `NotQueued` (code 16)
+
+**Description:** A timelock is configured but the proposal was never queued.
+
+**Common cause:** The threshold was lowered after the proposal's last signature, so it met the threshold without being queued.
+
+**Resolution:** Call `queue_transaction(tx_id)` and wait out the delay.
+
+---
+
+### `TransactionCancelled` (code 17)
+
+**Description:** The proposal was cancelled by a signer.
+
+**Common cause:** Signing or executing a proposal after `cancel_transaction`.
+
+**Resolution:** Propose a new transaction if the action is still wanted.
+
+---
+
+### `SpendingNotConfigured` (code 18)
+
+**Description:** No daily spending allowance has been configured.
+
+**Common cause:** Calling `spend_allowance` before `set_spending_limit`.
+
+**Resolution:** Configure the allowance with full threshold approval via `set_spending_limit`.
+
+---
+
+### `NotSpendingOperator` (code 19)
+
+**Description:** The caller is not the configured spending operator.
+
+**Common cause:** A signer or third party calling `spend_allowance`.
+
+**Resolution:** Use the operator address set by `set_spending_limit`, or go through a normal proposal.
+
+---
+
+### `DailyLimitExceeded` (code 20)
+
+**Description:** The spend would push the current window's total above `daily_limit`.
+
+**Common cause:** Spending more than the remaining allowance (see `remaining_allowance`).
+
+**Resolution:** Wait for the window to reset, or submit a full-threshold proposal.
+
+---
+
+### `RateLimited` (code 21)
+
+**Description:** The operator made too many `spend_allowance` calls in the current window.
+
+**Common cause:** More than `MAX_SPENDS_PER_WINDOW` spends within `SPENDING_WINDOW_LEDGERS`.
+
+**Resolution:** Batch payments into fewer calls or wait for the window to reset.
+
+---
+
+### `InvalidAmount` (code 22)
+
+**Description:** A spend amount was not positive, or a daily limit was negative.
+
+**Common cause:** Passing `0` or a negative value to `spend_allowance`, or a negative `daily_limit`.
+
+**Resolution:** Use a positive amount and a non-negative limit.
+
 > See `contract-api.md` for the full `MultisigContract` public API and the
 > remaining `MultisigError` codes 1–10.
 
