@@ -86,12 +86,19 @@ env.events().publish((topic_1, topic_2, ...), data);
 | Event | Symbol | Topics | Data Type | When Fired |
 |-------|--------|--------|-----------|-----------|
 | Initialized | `initialized` | `(Symbol, u32)` → event name, threshold | `u32` → signer count | `initialize()` called |
-| Signer Added | `added` | `(Symbol, Address)` → event name, signer | `u32` → new threshold | `add_signer()` called |
-| Signer Removed | `removed` | `(Symbol, Address)` → event name, signer | `u32` → new threshold | `remove_signer()` called |
+| Signer Added | `added` | `(Symbol, Address)` → event name, signer | `(u32, u32)` → signer weight, new threshold | `add_signer()` or `execute_signer_change()` called |
+| Signer Weight Updated | `weight_updated` | `(Symbol, Address)` → event name, signer | `(u32, u32)` → old weight, new weight | `update_signer_weight()` or `execute_signer_change()` called |
+| Threshold Changed | `threshold_changed` | `(Symbol,)` → event name | `(u32, u32)` → old threshold, new threshold | `execute_signer_change()` with `ChangeThreshold` |
+| Signer Removed | `removed` | `(Symbol, Address)` → event name, signer | `u32` → new threshold | `remove_signer()` or `execute_signer_change()` called |
 | Transaction Proposed | `proposed` | `(Symbol, Address)` → event name, proposer | `u64` → transaction ID | `propose()` called |
 | Transaction Signed | `signed` | `(Symbol, Address, u64)` → event name, signer, tx ID | `u32` → signature count | `sign()` called |
 | Transaction Executed | `executed` | `(Symbol, u64)` → event name, tx ID | `()` | `execute()` called (threshold met) |
 | Proposal Expired | `expired` | `(Symbol, u64)` → event name, tx ID | `()` | `cleanup_expired()` called |
+| Transaction Cancelled | `cancelled` | `(Symbol, Address)` → event name, proposer | `u64` → transaction ID | `cancel_proposal()` called |
+| Signature Revoked | `revoked` | `(Symbol, Address, u64)` → event name, signer, tx ID | `(u32, u32)` → signature count, accumulated weight | `revoke_signature()` called |
+| Signer Change Proposed | `signer_change_proposed` | `(Symbol, Address)` → event name, proposer | `u64` → signer proposal ID | `propose_signer_change()` called |
+| Signer Change Signed | `signer_change_signed` | `(Symbol, Address, u64)` → event name, signer, proposal ID | `u32` → signature count | `sign_signer_change()` called |
+| Signer Change Executed | `signer_change_executed` | `(Symbol, u64)` → event name, proposal ID | `()` | `execute_signer_change()` called |
 | Batch Executed | `batch_executed` | `(Symbol,)` → event name | `(Vec<u64>, u32)` → executed IDs, skipped count | `execute_batch()` called |
 
 ---

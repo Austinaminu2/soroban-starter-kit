@@ -34,6 +34,10 @@ pub enum MultisigError {
     InvalidWeight = 12,
     /// `cleanup_expired` was called before the proposal's expiry ledger was reached.
     NotYetExpired = 13,
+    /// Only the original proposer may cancel a proposal.
+    NotProposer = 14,
+    /// The signer has not signed the proposal, so there is nothing to revoke.
+    NotSigned = 15,
 }
 
 impl_display_error!(
@@ -51,4 +55,6 @@ impl_display_error!(
     ProposalExpired     => "proposal expired",
     InvalidWeight       => "invalid weight",
     NotYetExpired       => "not yet expired",
+    NotProposer         => "not proposer",
+    NotSigned           => "not signed",
 );

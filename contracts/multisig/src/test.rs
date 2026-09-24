@@ -110,7 +110,7 @@ fn add_signer_with_threshold_approvals_updates_signer_set() {
     let (client, alice, bob, carol, _) = create_multisig(&env);
     let dave = Address::generate(&env);
 
-    client.add_signer(&vec![&env, alice.clone(), bob.clone()], &dave, &3);
+    client.add_signer(&vec![&env, alice.clone(), bob.clone()], &dave, &1, &3);
 
     assert_eq!(client.get_threshold(), Some(3));
     assert_eq!(client.get_signers(), vec![&env, alice, bob, carol, dave]);
@@ -124,7 +124,7 @@ fn add_signer_rejects_insufficient_approvals() {
     let (client, alice, _, _, _) = create_multisig(&env);
     let dave = Address::generate(&env);
 
-    client.add_signer(&vec![&env, alice], &dave, &2);
+    client.add_signer(&vec![&env, alice], &dave, &1, &2);
 }
 
 #[test]
