@@ -1253,6 +1253,36 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 ---
 
+### `PriceExceedsMax` (code 13)
+
+**Description:** The listing's price is higher than the `max_price` the buyer passed to `buy`.
+
+**Common cause:** The seller cancelled and re-listed at a higher price, or the price changed between the buyer signing and the transaction executing.
+
+**Resolution:** Re-read the listing with `get_listing` and retry with an updated `max_price` if the new price is acceptable.
+
+---
+
+### `CollectionOfferNotFound` (code 14)
+
+**Description:** No collection offer exists for the given `offer_id`.
+
+**Common cause:** Accepting or cancelling a collection offer that was never made, or was already accepted or cancelled.
+
+**Resolution:** Call `get_collection_offer(offer_id)` to confirm the offer exists first.
+
+---
+
+### `CollectionOfferExpired` (code 15)
+
+**Description:** The collection offer's `expires_at` ledger has passed, so it can no longer be accepted.
+
+**Common cause:** Calling `accept_collection_offer` after expiry.
+
+**Resolution:** The buyer can still recover the escrowed funds with `cancel_collection_offer`.
+
+---
+
 ## Multisig Contract — `MultisigError`
 
 ### `ProposalExpired` (code 11)

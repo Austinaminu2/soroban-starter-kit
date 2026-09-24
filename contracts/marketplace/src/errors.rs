@@ -19,6 +19,9 @@ pub enum MarketplaceError {
     ListingNotExpired = 10,
     InvalidOfferAmount = 11,
     OfferNotFound = 12,
+    PriceExceedsMax = 13,
+    CollectionOfferNotFound = 14,
+    CollectionOfferExpired = 15,
 }
 
 impl_display_error!(
@@ -35,6 +38,9 @@ impl_display_error!(
     ListingNotExpired   => "listing not expired",
     InvalidOfferAmount  => "invalid offer amount",
     OfferNotFound       => "offer not found",
+    PriceExceedsMax     => "listing price exceeds buyer max price",
+    CollectionOfferNotFound => "collection offer not found",
+    CollectionOfferExpired  => "collection offer expired",
 );
 
 #[cfg(test)]
@@ -60,7 +66,10 @@ MarketplaceError::InvalidExpiry = {}\n\
 MarketplaceError::ListingExpired = {}\n\
 MarketplaceError::ListingNotExpired = {}\n\
 MarketplaceError::InvalidOfferAmount = {}\n\
-MarketplaceError::OfferNotFound = {}\n",
+MarketplaceError::OfferNotFound = {}\n\
+MarketplaceError::PriceExceedsMax = {}\n\
+MarketplaceError::CollectionOfferNotFound = {}\n\
+MarketplaceError::CollectionOfferExpired = {}\n",
             MarketplaceError::AlreadyInitialized as u32,
             MarketplaceError::NotInitialized as u32,
             MarketplaceError::NotAuthorized as u32,
@@ -73,6 +82,9 @@ MarketplaceError::OfferNotFound = {}\n",
             MarketplaceError::ListingNotExpired as u32,
             MarketplaceError::InvalidOfferAmount as u32,
             MarketplaceError::OfferNotFound as u32,
+            MarketplaceError::PriceExceedsMax as u32,
+            MarketplaceError::CollectionOfferNotFound as u32,
+            MarketplaceError::CollectionOfferExpired as u32,
         )
     }
 

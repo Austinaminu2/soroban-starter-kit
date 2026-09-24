@@ -76,6 +76,14 @@ This document assesses front-running/MEV risks specific to the lottery, auction,
 - Consider adding a minimum offer increase requirement
 - Document the offer replacement behavior clearly
 
+### Risk: Price Change Before Purchase (#1101)
+
+**Description:** A seller could cancel and re-list at a higher price (or otherwise change the effective price) between the time a buyer signs a `buy` transaction and the time it executes.
+
+**Mitigations Applied:**
+- `buy(buyer, listing_id, max_price)` requires the buyer to state the maximum price they will pay
+- The purchase is rejected with `PriceExceedsMax` if `listing.price > max_price`; no funds or NFT move
+
 ### Risk: Listing Expiry Manipulation
 
 **Description:** A buyer could observe a pending listing creation and front-run with a purchase before the seller can set an expiry.
