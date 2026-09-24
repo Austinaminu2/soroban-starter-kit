@@ -24,6 +24,14 @@ pub enum DaoError {
     InvalidQuorumBps = 12,
     /// Returned by `vote` when the voting period has ended.
     VotingClosed = 13,
+    /// Execution attempted before the execution timelock has elapsed.
+    TimelockNotExpired = 14,
+    /// Delegation would create a cycle in the delegation graph.
+    CircularDelegation = 15,
+    /// No locked tokens found for this voter/proposal combination.
+    NoLockedTokens = 16,
+    /// Attempted to unlock tokens before the proposal voting window has closed.
+    VotingStillOpen = 17,
 }
 
 impl_display_error!(
@@ -41,6 +49,10 @@ impl_display_error!(
     VotesAlreadyCast        => "votes have already been cast; proposer cannot cancel",
     InvalidQuorumBps        => "quorum_bps must be between 0 and 10_000",
     VotingClosed            => "voting period has ended",
+    TimelockNotExpired      => "execution timelock has not yet expired",
+    CircularDelegation      => "delegation would create a circular loop",
+    NoLockedTokens          => "no locked tokens found for this voter and proposal",
+    VotingStillOpen         => "voting period is still open; tokens cannot be unlocked yet",
 );
 
 #[cfg(test)]
@@ -67,7 +79,11 @@ DaoError::ProposalRejected = {}\n\
 DaoError::InsufficientVotingPower = {}\n\
 DaoError::VotesAlreadyCast = {}\n\
 DaoError::InvalidQuorumBps = {}\n\
-DaoError::VotingClosed = {}\n",
+DaoError::VotingClosed = {}\n\
+DaoError::TimelockNotExpired = {}\n\
+DaoError::CircularDelegation = {}\n\
+DaoError::NoLockedTokens = {}\n\
+DaoError::VotingStillOpen = {}\n",
             DaoError::NotAuthorized as u32,
             DaoError::AlreadyInitialized as u32,
             DaoError::NotInitialized as u32,
@@ -81,6 +97,10 @@ DaoError::VotingClosed = {}\n",
             DaoError::VotesAlreadyCast as u32,
             DaoError::InvalidQuorumBps as u32,
             DaoError::VotingClosed as u32,
+            DaoError::TimelockNotExpired as u32,
+            DaoError::CircularDelegation as u32,
+            DaoError::NoLockedTokens as u32,
+            DaoError::VotingStillOpen as u32,
         )
     }
 

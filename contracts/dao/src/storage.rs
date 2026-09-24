@@ -16,6 +16,9 @@ pub enum DataKey {
     QuorumBps,
     ProposalCount,
     Initialized,
+    /// Number of ledgers a passed proposal must wait in `Queued` state before
+    /// it can be executed. Zero means immediate execution is allowed.
+    ExecutionDelay,
 }
 
 /// Persistent-storage keys (per-proposal and per-vote data).
@@ -33,18 +36,41 @@ pub struct VoteKey {
     pub voter: Address,
 }
 
+/// Key for the amount of governance tokens a voter locked into the DAO for a
+/// specific proposal. Stored in persistent storage.
+#[contracttype]
+#[derive(Clone)]
+pub struct LockedTokensKey {
+    pub proposal_id: u32,
+    pub voter: Address,
+}
+
+/// Key for a delegator → delegatee mapping (liquid-democracy delegation).
+/// Stored in persistent storage.
+#[contracttype]
+#[derive(Clone)]
+pub struct DelegateKey {
+    pub delegator: Address,
+}
+
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ProposalState {
+    /// Voting is open.
     Active = 0,
-    Executed = 1,
-    Cancelled = 2,
+    /// Voting closed and the proposal passed; waiting out the execution timelock.
+    Queued = 1,
+    /// Timelock expired — the proposal has been executed on-chain.
+    Executed = 2,
+    /// Cancelled by the admin, a security-council veto, or the original proposer.
+    Cancelled = 3,
 }
 
 impl core::fmt::Display for ProposalState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             ProposalState::Active => "active",
+            ProposalState::Queued => "queued",
             ProposalState::Executed => "executed",
             ProposalState::Cancelled => "cancelled",
         })
@@ -58,6 +84,7 @@ pub struct Proposal {
     pub proposer: Address,
     pub title: String,
     pub description: String,
+    /// Last ledger at which votes may be cast.
     pub deadline: u32,
     pub yes_votes: i128,
     pub no_votes: i128,
@@ -66,4 +93,7 @@ pub struct Proposal {
     /// Used for quorum calculation and to cap voter voting power,
     /// preventing flash-loan-style manipulation.
     pub total_supply_at_creation: i128,
+    /// Earliest ledger at which this proposal may be executed once it is
+    /// queued (= `deadline` + `execution_delay`). Zero when not yet queued.
+    pub execution_eta: u32,
 }
