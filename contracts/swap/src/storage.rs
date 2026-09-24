@@ -12,17 +12,20 @@ use soroban_sdk::{Address, contracttype};
 #[derive(Clone)]
 pub enum DataKey {
     SwapCount,
+    BasketSwapCount,
     Initialized,
     Admin,
     Treasury,
     FeeBps,
     Swap(u32),
+    BasketSwap(u32),
 }
 
 #[contracttype]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SwapState {
     Pending = 0,
+    Executed = 1,
     Accepted = 1,
     Cancelled = 2,
 }
@@ -31,6 +34,7 @@ impl core::fmt::Display for SwapState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             SwapState::Pending => "pending",
+            SwapState::Executed => "executed",
             SwapState::Accepted => "accepted",
             SwapState::Cancelled => "cancelled",
         })
@@ -38,6 +42,14 @@ impl core::fmt::Display for SwapState {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BasketLeg {
+    pub token: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SwapInfo {
     pub id: u32,
@@ -48,6 +60,21 @@ pub struct SwapInfo {
     pub amount_b: i128,
     pub expires_at: u32,
     pub state: SwapState,
+    pub filled_amount: i128,
+    pub allow_partial: bool,
+    pub escrowed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BasketSwapInfo {
+    pub id: u32,
+    pub party_a: Address,
+    pub offers: soroban_sdk::Vec<BasketLeg>,
+    pub demands: soroban_sdk::Vec<BasketLeg>,
+    pub expires_at: u32,
+    pub state: SwapState,
+}
 }
     pub allowed_counterparty: Option<Address>,
     pub max_execution_delay: Option<u32>,

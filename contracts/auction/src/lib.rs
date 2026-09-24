@@ -71,6 +71,9 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(test)]
+extern crate std;
+
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
 mod dutch;
@@ -493,6 +496,26 @@ mod contract {
             Ok(())
         }
 
+            // Queue previous highest bidder's refund
+            let prev_bidder: Option<Address> =
+                env.storage().instance().get(&DataKey::HighestBidder);
+            if let Some(prev) = prev_bidder {
+                let pending: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Pending(prev.clone()))
+                    .unwrap_or(0);
+                let new_pending = pending + highest_bid;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Pending(prev.clone()), &new_pending);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Pending(prev.clone()),
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+                events::outbid(&env, &prev, highest_bid, amount);
+                events::refund_queued(&env, &prev, highest_bid);
         /// Return the current Dutch auction price (issue #1071).
         ///
         /// `start_price - (start_price - floor_price) * (now - start_ledger) / duration_ledgers`,

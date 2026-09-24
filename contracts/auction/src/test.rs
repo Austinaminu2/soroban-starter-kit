@@ -10,6 +10,8 @@
 use super::*;
 use soroban_nft_template::{NftContract, NftContractClient};
 use soroban_sdk::{
+    Address, Env,
+    testutils::{Address as _, Events as _, Ledger as _},
     Address, Env, String,
     testutils::{Address as _, Ledger as _},
     token::StellarAssetClient,
@@ -91,6 +93,19 @@ fn test_overbid_refunds_previous_bidder() {
     // b1 should have a pending refund of 1_000
     assert_eq!(client.get_pending(&b1), 1_000);
     assert_eq!(client.get_info().highest_bid, 1_200);
+    use soroban_sdk::{IntoVal, Symbol};
+    let contract_address = client.address.clone();
+    let all_events = env.events().all();
+    assert!(all_events.contains(&(
+        contract_address.clone(),
+        (Symbol::new(&env, "outbid"), b1.clone()).into_val(&env),
+        (1_000i128, 1_200i128).into_val(&env),
+    )));
+    assert!(all_events.contains(&(
+        contract_address,
+        (Symbol::new(&env, "refund_queued"), b1.clone()).into_val(&env),
+        1_000i128.into_val(&env),
+    )));
 
     // b1 withdraws refund
     client.withdraw(&b1);

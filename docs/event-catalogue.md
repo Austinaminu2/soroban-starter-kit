@@ -142,6 +142,8 @@ env.events().publish((topic_1, topic_2, ...), data);
 |-------|--------|--------|-----------|-----------|
 | Started | `started` | `(Symbol, Address)` → event name, seller | `(i128, u32)` → start price, deadline ledger | `start()` called |
 | Bid Placed | `bid_placed` | `(Symbol, Address)` → event name, bidder | `i128` → bid amount | `bid()` called |
+| Outbid | `outbid` | `(Symbol, Address)` → event name, outbid bidder | `(i128, i128)` → outbid amount, new highest bid | `bid()` called when an existing highest bidder is displaced |
+| Refund Queued | `refund_queued` | `(Symbol, Address)` → event name, refunded bidder | `i128` → refund amount queued | `bid()` called when previous highest bid is moved to pending refunds |
 | Ended (winner) | `ended` | `(Symbol, Address)` → event name, winner | `i128` → winning amount | `end()` called, winner exists |
 | Ended (no bids) | `ended_no_bids` | `(Symbol,)` → event name | `()` | `end()` called with no bids |
 | Ended (reserve not met) | `ended_reserve_not_met` | `(Symbol, Address)` → event name, highest bidder | `(i128, i128)` → highest bid, reserve price | `end()` called, bid < reserve |
