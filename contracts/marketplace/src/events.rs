@@ -41,6 +41,28 @@ pub fn offer_cancelled(env: &Env, listing_id: u64, buyer: &Address) {
         .publish((Symbol::new(env, "offer_cancelled"), listing_id), buyer.clone());
 }
 
+pub fn offer_refunded(env: &Env, listing_id: u64, buyer: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "offer_refunded"), listing_id),
+        (buyer.clone(), amount),
+    );
+}
+
+pub fn listing_invalidated(env: &Env, listing_id: u64, seller: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "listing_invalidated"), listing_id),
+        seller.clone(),
+    );
+}
+
+pub fn payment_token_allowed(env: &Env, token: &Address, allowed: bool) {
+    env.events()
+        .publish((Symbol::new(env, "payment_token_allowed"), token.clone()), allowed);
+}
+
+pub fn whitelist_enabled(env: &Env, enabled: bool) {
+    env.events()
+        .publish((Symbol::new(env, "whitelist_enabled"),), enabled);
 pub fn collection_offer_made(
     env: &Env,
     offer_id: u64,

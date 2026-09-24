@@ -555,7 +555,7 @@ fn test_marketplace_full_lifecycle_with_royalty() {
     nft.approve(&token_id, &marketplace_addr);
 
     // Seller lists the NFT
-    let listing_id = marketplace.list(&seller, &nft_addr, &token_id, &price);
+    let listing_id = marketplace.list(&seller, &nft_addr, &token_id, &price, &token_addr);
     let listing = marketplace.get_listing(&listing_id).unwrap();
     assert_eq!(listing.seller, seller);
     assert_eq!(listing.price, price);
@@ -613,7 +613,7 @@ fn test_marketplace_cancel_listing() {
 
     // Seller approves and lists the NFT
     nft.approve(&token_id, &marketplace_addr);
-    let listing_id = marketplace.list(&seller, &nft_addr, &token_id, &1_000i128);
+    let listing_id = marketplace.list(&seller, &nft_addr, &token_id, &1_000i128, &token_addr);
 
     // Seller cancels the listing
     marketplace.cancel(&seller, &listing_id);
@@ -1071,7 +1071,7 @@ fn test_marketplace_nft_token_end_to_end() {
 
     // ── Seller approves marketplace to transfer the NFT, then lists it ───
     nft.approve(&token_id, &marketplace_addr);
-    let listing_id = marketplace.list(&seller, &nft_addr, &token_id, &price);
+    let listing_id = marketplace.list(&seller, &nft_addr, &token_id, &price, &token_addr);
 
     // Confirm listing is active
     let listing = marketplace.get_listing(&listing_id).unwrap();
@@ -1173,6 +1173,8 @@ fn test_marketplace_nft_token_with_per_token_royalty() {
 
     // ── List and buy ─────────────────────────────────────────────────────
     nft.approve(&token_id, &marketplace_addr);
+    let listing_id = marketplace.list(&seller, &nft_addr_raw, &token_id, &sale_price, &token_addr);
+    marketplace.buy(&buyer, &listing_id);
     let listing_id = marketplace.list(&seller, &nft_addr_raw, &token_id, &sale_price);
     marketplace.buy(&buyer, &listing_id, &sale_price);
 

@@ -19,6 +19,12 @@ pub enum MarketplaceError {
     ListingNotExpired = 10,
     InvalidOfferAmount = 11,
     OfferNotFound = 12,
+    PaymentTokenNotAllowed = 13,
+    SellerNotOwner = 14,
+    BatchTooLarge = 15,
+    EmptyBatch = 16,
+    ListingStillActive = 17,
+    Reentrant = 18,
     PriceExceedsMax = 13,
     CollectionOfferNotFound = 14,
     CollectionOfferExpired = 15,
@@ -38,6 +44,12 @@ impl_display_error!(
     ListingNotExpired   => "listing not expired",
     InvalidOfferAmount  => "invalid offer amount",
     OfferNotFound       => "offer not found",
+    PaymentTokenNotAllowed => "payment token not allowed",
+    SellerNotOwner      => "seller no longer owns the NFT",
+    BatchTooLarge       => "batch too large",
+    EmptyBatch          => "empty batch",
+    ListingStillActive  => "listing still active",
+    Reentrant           => "reentrant call",
     PriceExceedsMax     => "listing price exceeds buyer max price",
     CollectionOfferNotFound => "collection offer not found",
     CollectionOfferExpired  => "collection offer expired",
@@ -67,6 +79,12 @@ MarketplaceError::ListingExpired = {}\n\
 MarketplaceError::ListingNotExpired = {}\n\
 MarketplaceError::InvalidOfferAmount = {}\n\
 MarketplaceError::OfferNotFound = {}\n\
+MarketplaceError::PaymentTokenNotAllowed = {}\n\
+MarketplaceError::SellerNotOwner = {}\n\
+MarketplaceError::BatchTooLarge = {}\n\
+MarketplaceError::EmptyBatch = {}\n\
+MarketplaceError::ListingStillActive = {}\n\
+MarketplaceError::Reentrant = {}\n",
 MarketplaceError::PriceExceedsMax = {}\n\
 MarketplaceError::CollectionOfferNotFound = {}\n\
 MarketplaceError::CollectionOfferExpired = {}\n",
@@ -82,6 +100,12 @@ MarketplaceError::CollectionOfferExpired = {}\n",
             MarketplaceError::ListingNotExpired as u32,
             MarketplaceError::InvalidOfferAmount as u32,
             MarketplaceError::OfferNotFound as u32,
+            MarketplaceError::PaymentTokenNotAllowed as u32,
+            MarketplaceError::SellerNotOwner as u32,
+            MarketplaceError::BatchTooLarge as u32,
+            MarketplaceError::EmptyBatch as u32,
+            MarketplaceError::ListingStillActive as u32,
+            MarketplaceError::Reentrant as u32,
             MarketplaceError::PriceExceedsMax as u32,
             MarketplaceError::CollectionOfferNotFound as u32,
             MarketplaceError::CollectionOfferExpired as u32,
