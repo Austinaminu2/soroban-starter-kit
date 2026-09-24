@@ -45,6 +45,7 @@ fn setup_auction<'a>(
         &deadline,
         &None,
         &0,
+        &u32::MAX,
         &0,
         &0,
         &None,
@@ -84,6 +85,8 @@ struct Params {
     duration: u32,
     reserve_price: Option<i128>,
     extension_window: u32,
+    /// Ledgers past the initial deadline that extensions may reach.
+    max_extension: u32,
     grace: u32,
     fee: i128,
 }
@@ -95,6 +98,7 @@ prop_compose! {
         duration in 20u32..=80,
         reserve_price in proptest::option::of(1i128..=3_000),
         extension_window in 0u32..=10,
+        max_extension in 0u32..=30,
         grace in 0u32..=30,
         fee in 0i128..=500,
     ) -> Params {
@@ -104,6 +108,7 @@ prop_compose! {
             duration,
             reserve_price,
             extension_window,
+            max_extension,
             grace,
             fee,
         }
@@ -147,6 +152,7 @@ struct Model {
     ledger: u32,
     start_ledger: u32,
     deadline: u32,
+    max_deadline: u32,
     highest_bid: i128,
     highest_bidder: Option<usize>,
     pending: [i128; BIDDERS],
@@ -157,8 +163,10 @@ struct Model {
 impl Model {
     fn new(params: Params, start_ledger: u32, deadline: u32) -> Self {
         let highest_bid = params.start_price - 1;
+        let max_deadline = deadline + params.max_extension;
         Self {
             params,
+            max_deadline,
             ledger: start_ledger,
             start_ledger,
             deadline,
@@ -210,7 +218,7 @@ impl Model {
 
         let window = self.params.extension_window;
         if window > 0 && self.deadline.saturating_sub(self.ledger) <= window {
-            self.deadline = self.deadline.saturating_add(window);
+            self.deadline = self.deadline.saturating_add(window).min(self.max_deadline);
         }
         Ok(())
     }
@@ -298,6 +306,9 @@ fn check_invariants(
     // The contract agrees with the reference model.
     prop_assert_eq!(info.highest_bid, model.highest_bid);
     prop_assert_eq!(info.deadline, model.deadline);
+    // Anti-sniping extensions never push the deadline past the cap.
+    prop_assert_eq!(info.max_deadline, model.max_deadline);
+    prop_assert!(info.deadline <= info.max_deadline);
     prop_assert_eq!(info.settled, model.settled);
     prop_assert_eq!(cancelled, model.cancelled);
     prop_assert_eq!(
@@ -361,6 +372,7 @@ proptest! {
             &deadline,
             &params.reserve_price,
             &params.extension_window,
+            &(deadline + params.max_extension),
             &params.grace,
             &params.fee,
         );
@@ -379,6 +391,7 @@ proptest! {
                         &deadline,
                         &params.reserve_price,
                         &params.extension_window,
+                        &(deadline + params.max_extension),
                         &params.grace,
                         &params.fee,
                     ));
@@ -606,6 +619,7 @@ proptest! {
             &deadline,
             &Some(reserve_price),
             &0,
+            &u32::MAX,
             &0,
             &0,
             &None,
