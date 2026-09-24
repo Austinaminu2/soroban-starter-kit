@@ -1642,14 +1642,6 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 ## Swap Contract — `SwapError`
 
-> **Note:** `contracts/swap/src/lib.rs` currently contains corrupted/duplicated
-> code (e.g. `set_fee_bps` and `get_fee_bps` are each defined twice, and some
-> branches reference states/errors like `SwapState::Pending`/`Accepted` and
-> `SwapError::SwapNotPending`/`SwapExpired` that don't exist in `storage.rs` /
-> `errors.rs`). This section is cross-checked against the authoritative
-> `errors.rs` enum below; see `contract-api.md` for how this affects the
-> documented public API.
-
 ### `NotAuthorized` (code 1)
 
 **Description:** The caller is not permitted to perform this action.

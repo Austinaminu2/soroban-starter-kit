@@ -350,13 +350,13 @@ Per-subscriber (`Subscription(Address)`) and per-plan (`Plan(Symbol)`) persisten
 | `Treasury` | Instance | `Address` | Extended on `set_treasury` | Fee-collection treasury address |
 | `FeeBps` | Instance | `u32` | Extended on init/`set_fee_bps` | Swap fee in basis points |
 
-### Persistent-Storage Keys (`SwapKey`)
+### Persistent-Storage Keys (`DataKey`)
 
 | Key | Tier | Type | TTL Policy | Description |
 |-----|------|------|------------|-------------|
 | `Swap(u32)` | Persistent | `SwapInfo` | Extended on propose/accept/cancel | Per-swap parties, tokens, amounts, expiry, and state |
 
-Per-swap persistent storage (`Swap(u32)`) lets each proposed swap expire independently of the shared instance config. See `error-reference.md`'s Swap section for a note on `contracts/swap/src/lib.rs` currently containing corrupted/duplicated code; this storage layout reflects the authoritative `storage.rs` definitions.
+Per-swap persistent storage (`DataKey::Swap(u32)`) lets each proposed swap expire independently of the shared instance configuration. The contract bumps the record TTL whenever a swap is proposed, read, accepted, or cancelled, while the instance tier contains only configuration and the monotonic counter.
 
 ---
 
