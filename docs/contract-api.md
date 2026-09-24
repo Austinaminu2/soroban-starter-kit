@@ -507,29 +507,36 @@ Commit-reveal randomness: `commit` locks in `hash(secret ++ salt)` and a reveal 
 
 **Location:** `contracts/marketplace/src/lib.rs`
 
-> **Known issue:** `lib.rs` currently contains corrupted/duplicated code — two
-> conflicting `get_active_listings` definitions (one of which is actually the
-> body of an offer-accept flow), references to error variants and a `NftClient`
-> type that don't exist anywhere in the crate, and no function that actually
-> creates an `Offer` (despite `cancel_offer` and offer-acceptance logic, and an
-> `Offer` storage key, existing). The table below documents only the coherent,
-> internally-consistent subset of the file, using the canonical error names
-> from `errors.rs`. Treat this section as a known-incomplete placeholder until
-> the contract code itself is fixed in a separate PR — see the note in
-> `error-reference.md`'s Marketplace section.
+Each listing carries its own `payment_token`; purchases, offers and royalties on
+that listing all settle in that token. The admin may optionally enforce a
+payment-token whitelist on new listings (off by default; the default token
+passed to `initialize` is always whitelisted). Batch entry points accept at most
+`MAX_BATCH_SIZE` (20) items and are all-or-nothing.
 
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
 | `initialize` | `env: Env, admin: Address, payment_token: Address, royalty_bps: u32, royalty_recipient: Address` | `Result<(), MarketplaceError>` | `AlreadyInitialized`, `InvalidRoyalty` |
-| `list` | `env: Env, seller: Address, token_id: u32, price: i128` | `Result<u64, MarketplaceError>` | `NotInitialized`, `NotAuthorized` |
-| `buy` | `env: Env, buyer: Address, listing_id: u64, payment_amount: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `InvalidPrice` |
-| `cancel` | `env: Env, caller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive` |
-| `cancel_offer` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `OfferNotFound` |
+| `set_payment_token_allowed` | `env: Env, token: Address, allowed: bool` (admin) | `Result<(), MarketplaceError>` | `NotInitialized` |
+| `set_whitelist_enabled` | `env: Env, enabled: bool` (admin) | `Result<(), MarketplaceError>` | `NotInitialized` |
+| `is_whitelist_enabled` | `env: Env` | `bool` | None |
+| `is_payment_token_allowed` | `env: Env, token: Address` | `bool` | None |
+| `get_default_payment_token` | `env: Env` | `Option<Address>` | None |
+| `list` | `env: Env, seller: Address, nft_contract: Address, token_id: u32, price: i128, payment_token: Address` | `Result<u64, MarketplaceError>` | `NotInitialized`, `InvalidPrice`, `PaymentTokenNotAllowed` |
+| `list_with_expiry` | `env: Env, seller: Address, nft_contract: Address, token_id: u32, price: i128, payment_token: Address, expires_at: u32` | `Result<u64, MarketplaceError>` | `NotInitialized`, `InvalidPrice`, `InvalidExpiry`, `PaymentTokenNotAllowed` |
+| `list_batch` | `env: Env, seller: Address, items: Vec<ListingParams>` | `Result<Vec<u64>, MarketplaceError>` | `EmptyBatch`, `BatchTooLarge`, + `list_with_expiry` errors |
+| `buy` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `ListingExpired`, `SellerNotOwner` |
+| `buy_batch` | `env: Env, buyer: Address, listing_ids: Vec<u64>` | `Result<(), MarketplaceError>` | `EmptyBatch`, `BatchTooLarge`, + `buy` errors |
+| `cancel` | `env: Env, seller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive` |
+| `cancel_batch` | `env: Env, seller: Address, listing_ids: Vec<u64>` | `Result<(), MarketplaceError>` | `EmptyBatch`, `BatchTooLarge`, + `cancel` errors |
+| `sweep_expired` | `env: Env, seller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive`, `ListingNotExpired` |
+| `invalidate_listing` | `env: Env, listing_id: u64` (permissionless) | `Result<bool, MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive` |
+| `make_offer` | `env: Env, buyer: Address, listing_id: u64, amount: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `InvalidOfferAmount` |
+| `accept_offer` | `env: Env, seller: Address, listing_id: u64, buyer: Address` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `NotAuthorized`, `OfferNotFound`, `SellerNotOwner` |
+| `cancel_offer` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `OfferNotFound` |
+| `sweep_offers` | `env: Env, listing_id: u64, buyers: Vec<Address>` (permissionless) | `Result<u32, MarketplaceError>` | `NotInitialized`, `EmptyBatch`, `BatchTooLarge`, `ListingNotFound`, `ListingStillActive` |
 | `get_listing` | `env: Env, listing_id: u64` | `Option<Listing>` | None |
 | `get_offer` | `env: Env, listing_id: u64, buyer: Address` | `Option<i128>` | None |
-| `get_active_listings` | `env: Env, cursor: u64, limit: u32` | `ListingPage` | None |
-
-**Not currently reachable through a working entry point:** making an offer (an `Offer` is only ever read/cancelled, never created) and accepting an offer (the intended logic exists but is bound to a duplicate, misnamed `get_active_listings` definition rather than its own function).
+| `get_active_listings` | `env: Env, cursor: u64, limit: u32` | `ListingPage` (ghost listings filtered out) | None |
 
 **Errors:**
 - `AlreadyInitialized` (1) — `initialize` called twice
@@ -544,6 +551,12 @@ Commit-reveal randomness: `commit` locks in `hash(secret ++ salt)` and a reveal 
 - `ListingNotExpired` (10) — Sweep called on a non-expired listing
 - `InvalidOfferAmount` (11) — Offer amount invalid or not below price
 - `OfferNotFound` (12) — No offer for `(listing_id, buyer)`
+- `PaymentTokenNotAllowed` (13) — Whitelist enabled and listing token not on it
+- `SellerNotOwner` (14) — Seller no longer owns the listed NFT (ghost listing)
+- `BatchTooLarge` (15) — Batch exceeds `MAX_BATCH_SIZE`
+- `EmptyBatch` (16) — Batch contains no items
+- `ListingStillActive` (17) — `sweep_offers` called on an open listing
+- `Reentrant` (18) — Reentrancy guard already held
 
 ---
 

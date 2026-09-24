@@ -51,7 +51,7 @@ proptest! {
         let nft_addr = Address::generate(&env);
         let token_id = 1u32;
 
-        let listing_id = client.list(&seller, &nft_addr, &token_id, &price);
+        let listing_id = client.list(&seller, &nft_addr, &token_id, &price, &token_addr);
 
         let seller_balance_before = soroban_sdk::token::Client::new(&env, &token_addr).balance(&seller);
         let royalty_balance_before = soroban_sdk::token::Client::new(&env, &token_addr).balance(&royalty_recipient);
@@ -153,7 +153,7 @@ proptest! {
         client.initialize(&admin, &token_addr, &250u32, &royalty_recipient);
 
         let nft_addr = Address::generate(&env);
-        let listing_id = client.list(&seller, &nft_addr, &1u32, &price);
+        let listing_id = client.list(&seller, &nft_addr, &1u32, &price, &token_addr);
 
         // Cancel the listing
         let _ = client.try_cancel(&seller, &listing_id);
@@ -196,7 +196,7 @@ proptest! {
         client.initialize(&admin, &token_addr, &250u32, &royalty_recipient);
 
         let nft_addr = Address::generate(&env);
-        let listing_id = client.list(&seller, &nft_addr, &1u32, &price);
+        let listing_id = client.list(&seller, &nft_addr, &1u32, &price, &token_addr);
 
         // Check price multiple times
         let listing1 = client.get_listing(listing_id);
