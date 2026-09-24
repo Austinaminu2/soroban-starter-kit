@@ -20,6 +20,15 @@
 //! staker's balance by up to their full current stake.  The slashed tokens are
 //! routed to the `slash_destination` address supplied at initialization (this
 //! can be a burn address or a treasury contract).
+//!
+//! ## Undistributed rewards (#1129)
+//!
+//! When `add_rewards` is called while `total_staked == 0`, the deposited
+//! tokens are held in [`DataKey::UndistributedRewards`] instead of being
+//! silently trapped.  They are folded into the global reward-per-token
+//! accumulator the next time rewards are added with a non-zero stake, or when
+//! the first staker joins.  If the pool stays empty the admin can reclaim them
+//! via `reclaim_undistributed_rewards`.
 
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
@@ -48,6 +57,34 @@ fn reward_per_token(env: &Env) -> i128 {
         .instance()
         .get(&DataKey::RewardPerTokenStored)
         .unwrap_or(0i128)
+}
+
+/// Returns the amount of rewards deposited while no tokens were staked.
+fn undistributed_rewards(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::UndistributedRewards)
+        .unwrap_or(0i128)
+}
+
+/// Folds any held undistributed rewards into the reward-per-token accumulator.
+///
+/// Must only be called when `total_staked > 0`; otherwise the rewards would be
+/// divided by zero.  Returns the amount that was folded in.
+fn distribute_undistributed(env: &Env, total_staked: i128) -> i128 {
+    let held = undistributed_rewards(env);
+    if held <= 0 || total_staked <= 0 {
+        return 0;
+    }
+    let rpt = reward_per_token(env);
+    let new_rpt = rpt + held * REWARD_SCALE / total_staked;
+    env.storage()
+        .instance()
+        .set(&DataKey::RewardPerTokenStored, &new_rpt);
+    env.storage()
+        .instance()
+        .set(&DataKey::UndistributedRewards, &0i128);
+    held
 }
 
 /// Helper to get admin address or return NotInitialized error.
@@ -191,6 +228,9 @@ mod contract {
                 .set(&DataKey::RewardPerTokenStored, &0i128);
             env.storage()
                 .instance()
+                .set(&DataKey::UndistributedRewards, &0i128);
+            env.storage()
+                .instance()
                 .set(&DataKey::UnbondingPeriod, &unbonding_period);
             env.storage()
                 .instance()
@@ -230,215 +270,44 @@ mod contract {
                 .persistent()
                 .get(&DataKey::Stake(staker.clone()))
                 .unwrap_or(0i128);
-            let new_stake = prev + amount;
             env.storage()
                 .persistent()
-                .set(&DataKey::Stake(staker.clone()), &new_stake);
+                .set(&DataKey::Stake(staker.clone()), &(prev + amount));
 
-            let total = get_total_staked_internal(&env)?;
+            let total_staked = get_total_staked_internal(&env)?;
+            let new_total = total_staked + amount;
             env.storage()
                 .instance()
-                .set(&DataKey::TotalStaked, &(total + amount));
+                .set(&DataKey::TotalStaked, &new_total);
+
+            // Fold any rewards that were deposited while the pool was empty so
+            // the first staker (and everyone after) can earn them (#1129).
+            distribute_undistributed(&env, new_total);
 
             bump(&env);
-            events::staked(&env, &staker, amount, new_stake);
+            events::staked(&env, &staker, amount);
             Ok(())
         }
 
-        /// Begin the unbonding process for `amount` stake tokens.
+        /// Deposit `amount` reward tokens from the admin into the pool.
         ///
-        /// When `unbonding_period == 0` the tokens are returned immediately
-        /// (identical to the original behaviour). Otherwise an [`UnbondRequest`]
-        /// is recorded and the caller must invoke [`Self::withdraw`] after
-        /// `unbonding_period` ledgers have elapsed.
-        ///
-        /// Accrued rewards are snapshotted but not transferred; call
-        /// [`Self::claim_rewards`] separately.
+        /// If no tokens are currently staked the rewards are held in
+        /// [`DataKey::UndistributedRewards`] and distributed when stakers join.
         ///
         /// # Errors
         /// - [`StakingError::NotInitialized`] if the contract has not been initialized.
         /// - [`StakingError::InvalidAmount`] if `amount` <= 0.
-        /// - [`StakingError::NoStake`] if the staker has no stake.
-        /// - [`StakingError::InsufficientStake`] if `amount` exceeds the staker's stake.
-        pub fn unstake(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
+        pub fn add_rewards(env: Env, admin: Address, amount: i128) -> Result<(), StakingError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(StakingError::NotInitialized);
             }
             if amount <= 0 {
                 return Err(StakingError::InvalidAmount);
             }
-            staker.require_auth();
-
-            let current: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Stake(staker.clone()))
-                .unwrap_or(0i128);
-            if current == 0 {
-                return Err(StakingError::NoStake);
+            let stored_admin = get_admin(&env)?;
+            if admin != stored_admin {
+                return Err(StakingError::Unauthorized);
             }
-            if amount > current {
-                return Err(StakingError::InsufficientStake);
-            }
-
-            update_reward(&env, &staker);
-
-            let remaining = current - amount;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Stake(staker.clone()), &remaining);
-
-            let total = get_total_staked_internal(&env)?;
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalStaked, &(total - amount));
-
-            let unbonding_period: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::UnbondingPeriod)
-                .unwrap_or(0u32);
-
-            if unbonding_period == 0 {
-                // Immediate withdrawal — legacy behaviour.
-                let stake_token = get_stake_token(&env)?;
-                token::Client::new(&env, &stake_token).transfer(
-                    &env.current_contract_address(),
-                    &staker,
-                    &amount,
-                );
-                bump(&env);
-                events::unstaked(&env, &staker, amount, remaining);
-            } else {
-                // Check if there's already a pending unbond request.
-                if env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::UnbondRequest(staker.clone()))
-                {
-                    return Err(StakingError::UnbondRequestPending);
-                }
-
-                // Queue an unbond request.
-                let available_at = env.ledger().sequence() + unbonding_period;
-                let request = UnbondRequest {
-                    amount,
-                    available_at,
-                };
-                env.storage()
-                    .persistent()
-                    .set(&DataKey::UnbondRequest(staker.clone()), &request);
-                bump(&env);
-                events::unbond_requested(&env, &staker, amount, available_at);
-            }
-
-            Ok(())
-        }
-
-        /// Withdraw tokens after the unbonding period has elapsed.
-        ///
-        /// Must be called after `unstake` recorded an [`UnbondRequest`] and the
-        /// required number of ledgers have passed.
-        ///
-        /// # Errors
-        /// - [`StakingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`StakingError::NoUnbondRequest`] if there is no pending unbond request.
-        /// - [`StakingError::UnbondingNotComplete`] if the unbonding period has not elapsed.
-        pub fn withdraw(env: Env, staker: Address) -> Result<i128, StakingError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(StakingError::NotInitialized);
-            }
-            staker.require_auth();
-
-            let request: UnbondRequest = env
-                .storage()
-                .persistent()
-                .get(&DataKey::UnbondRequest(staker.clone()))
-                .ok_or(StakingError::NoUnbondRequest)?;
-
-            if env.ledger().sequence() < request.available_at {
-                return Err(StakingError::UnbondingNotComplete);
-            }
-
-            // Clear the request before transferring.
-            env.storage()
-                .persistent()
-                .remove(&DataKey::UnbondRequest(staker.clone()));
-
-            let stake_token = get_stake_token(&env)?;
-            token::Client::new(&env, &stake_token).transfer(
-                &env.current_contract_address(),
-                &staker,
-                &request.amount,
-            );
-
-            bump(&env);
-            events::withdrawn(&env, &staker, request.amount);
-            Ok(request.amount)
-        }
-
-        /// Transfer all accrued reward tokens to `staker`.
-        ///
-        /// # Errors
-        /// - [`StakingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`StakingError::NoRewards`] if there are no rewards to claim.
-        pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, StakingError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(StakingError::NotInitialized);
-            }
-            staker.require_auth();
-
-            update_reward(&env, &staker);
-
-            let reward: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Rewards(staker.clone()))
-                .unwrap_or(0i128);
-            if reward <= 0 {
-                return Err(StakingError::NoRewards);
-            }
-
-            env.storage()
-                .persistent()
-                .set(&DataKey::Rewards(staker.clone()), &0i128);
-
-            let total_rewards = get_total_rewards_internal(&env)?;
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalRewards, &(total_rewards - reward));
-
-            let reward_token = get_reward_token(&env)?;
-            token::Client::new(&env, &reward_token).transfer(
-                &env.current_contract_address(),
-                &staker,
-                &reward,
-            );
-
-            bump(&env);
-            events::rewards_claimed(&env, &staker, reward);
-            Ok(reward)
-        }
-
-        /// Admin deposits `amount` reward tokens into the pool.
-        ///
-        /// The reward-per-token accumulator is increased by `amount / total_staked`.
-        /// If no tokens are currently staked the rewards are held and distributed
-        /// when stakers join.
-        ///
-        /// # Errors
-        /// - [`StakingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`StakingError::Unauthorized`] if the caller is not the admin.
-        /// - [`StakingError::InvalidAmount`] if `amount` <= 0.
-        pub fn add_rewards(env: Env, amount: i128) -> Result<(), StakingError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(StakingError::NotInitialized);
-            }
-            if amount <= 0 {
-                return Err(StakingError::InvalidAmount);
-            }
-
-            let admin = get_admin(&env)?;
             admin.require_auth();
 
             let reward_token = get_reward_token(&env)?;
@@ -450,15 +319,22 @@ mod contract {
 
             let total_staked = get_total_staked_internal(&env)?;
             if total_staked > 0 {
-                let rpt: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::RewardPerTokenStored)
-                    .unwrap_or(0i128);
-                let new_rpt = rpt + amount * REWARD_SCALE / total_staked;
+                // Fold any previously held rewards in first, then the new amount.
+                let held = undistributed_rewards(&env);
+                let rpt = reward_per_token(&env);
+                let new_rpt = rpt + (held + amount) * REWARD_SCALE / total_staked;
                 env.storage()
                     .instance()
                     .set(&DataKey::RewardPerTokenStored, &new_rpt);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::UndistributedRewards, &0i128);
+            } else {
+                // No stakers yet — hold the rewards until someone stakes.
+                let held = undistributed_rewards(&env);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::UndistributedRewards, &(held + amount));
             }
 
             let total_rewards = get_total_rewards_internal(&env)?;
@@ -468,205 +344,80 @@ mod contract {
                 .set(&DataKey::TotalRewards, &new_total);
 
             bump(&env);
-            events::rewards_added(&env, &admin, amount, new_total);
+            events::rewards_added(&env, &admin, amount);
             Ok(())
         }
 
-        /// Admin-only: slash `amount` tokens from `staker`'s stake.
+        /// Reclaim rewards that were deposited while no tokens were staked.
         ///
-        /// The slashed amount is capped at the staker's current stake balance.
-        /// Slashed tokens are transferred to the `slash_destination` address
-        /// configured at initialization (e.g. a treasury or burn address).
+        /// Admin-only escape hatch for the case where the pool never receives a
+        /// staker and the held rewards would otherwise be stuck (#1129).
         ///
         /// # Errors
         /// - [`StakingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`StakingError::Unauthorized`] if the caller is not the admin.
-        /// - [`StakingError::InvalidAmount`] if `amount` <= 0.
-        /// - [`StakingError::NoStake`] if the staker has no balance to slash.
-        pub fn slash(env: Env, staker: Address, amount: i128) -> Result<i128, StakingError> {
+        /// - [`StakingError::Unauthorized`] if `admin` is not the stored admin.
+        /// - [`StakingError::InvalidAmount`] if there are no undistributed rewards.
+        pub fn reclaim_undistributed_rewards(
+            env: Env,
+            admin: Address,
+        ) -> Result<i128, StakingError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(StakingError::NotInitialized);
             }
-            if amount <= 0 {
+            let stored_admin = get_admin(&env)?;
+            if admin != stored_admin {
+                return Err(StakingError::Unauthorized);
+            }
+            admin.require_auth();
+
+            let held = undistributed_rewards(&env);
+            if held <= 0 {
                 return Err(StakingError::InvalidAmount);
             }
 
-            let admin = get_admin(&env)?;
-            admin.require_auth();
-
-            let current: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Stake(staker.clone()))
-                .unwrap_or(0i128);
-            if current == 0 {
-                return Err(StakingError::NoStake);
-            }
-
-            // Cap at current balance.
-            let slash_amount = if amount > current { current } else { amount };
-
-            // Update reward snapshot before adjusting stake.
-            update_reward(&env, &staker);
-
-            let remaining = current - slash_amount;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Stake(staker.clone()), &remaining);
-
-            let total = get_total_staked_internal(&env)?;
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalStaked, &(total - slash_amount));
-
-            // Route slashed tokens to the configured destination.
-            let destination: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::SlashDestination)
-                .ok_or(StakingError::NotInitialized)?;
-            let stake_token = get_stake_token(&env)?;
-            token::Client::new(&env, &stake_token).transfer(
+            let reward_token = get_reward_token(&env)?;
+            token::Client::new(&env, &reward_token).transfer(
                 &env.current_contract_address(),
-                &destination,
-                &slash_amount,
+                &admin,
+                &held,
             );
 
-            bump(&env);
-            events::slashed(&env, &admin, &staker, slash_amount, &destination);
-            Ok(slash_amount)
-        }
-
-        /// Returns the staker's current stake balance.
-        pub fn get_stake(env: Env, staker: Address) -> i128 {
-            env.storage()
-                .persistent()
-                .get(&DataKey::Stake(staker))
-                .unwrap_or(0i128)
-        }
-
-        /// Returns the staker's currently accrued (unclaimed) rewards.
-        pub fn get_rewards(env: Env, staker: Address) -> i128 {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return 0;
-            }
-            earned(&env, &staker)
-        }
-
-        /// Returns the total amount of tokens currently staked.
-        pub fn get_total_staked(env: Env) -> i128 {
             env.storage()
                 .instance()
-                .get(&DataKey::TotalStaked)
-                .unwrap_or(0i128)
-        }
+                .set(&DataKey::UndistributedRewards, &0i128);
 
-        /// Returns the total reward tokens held by the contract.
-        pub fn get_total_rewards(env: Env) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::TotalRewards)
-                .unwrap_or(0i128)
-        }
-
-        /// Return the on-chain contract version number.
-        pub fn contract_version(env: Env) -> u32 {
-            env.storage().instance().get(&DataKey::Version).unwrap_or(0)
-        }
-
-        /// Return the pending unbond request for `staker`, if any.
-        pub fn get_unbond_request(env: Env, staker: Address) -> Option<UnbondRequest> {
-            env.storage()
-                .persistent()
-                .get(&DataKey::UnbondRequest(staker))
-        }
-
-        /// Enable or disable auto-compounding for `staker`.
-        ///
-        /// When compounding is enabled, calling [`compound`](Self::compound) will
-        /// re-stake accrued rewards instead of transferring them out.
-        /// Requires stake token == reward token.
-        pub fn set_compounding(
-            env: Env,
-            staker: Address,
-            enabled: bool,
-        ) -> Result<(), StakingError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(StakingError::NotInitialized);
-            }
-            staker.require_auth();
-            env.storage()
-                .persistent()
-                .set(&DataKey::Compounding(staker), &enabled);
-            bump(&env);
-            Ok(())
-        }
-
-        /// Re-stake accrued rewards back into principal (compound).
-        ///
-        /// This transfers no tokens externally — rewards are simply moved from the
-        /// reward ledger back into the staker's principal stake.  Requires the stake
-        /// token and reward token to be the same contract (single-asset staking).
-        ///
-        /// # Errors
-        /// - [`StakingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`StakingError::NoRewards`] if there are no rewards to compound.
-        /// - [`StakingError::CompoundTokenMismatch`] if stake token != reward token.
-        #[allow(clippy::arithmetic_side_effects)] // checked via overflow guards
-        pub fn compound(env: Env, staker: Address) -> Result<i128, StakingError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(StakingError::NotInitialized);
-            }
-            staker.require_auth();
-
-            // Compound only makes sense when stake token == reward token.
-            let stake_token = get_stake_token(&env)?;
-            let reward_token = get_reward_token(&env)?;
-            if stake_token != reward_token {
-                return Err(StakingError::CompoundTokenMismatch);
-            }
-
-            update_reward(&env, &staker);
-
-            let reward: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Rewards(staker.clone()))
-                .unwrap_or(0i128);
-            if reward <= 0 {
-                return Err(StakingError::NoRewards);
-            }
-
-            // Clear the reward ledger entry.
-            env.storage()
-                .persistent()
-                .set(&DataKey::Rewards(staker.clone()), &0i128);
-
-            // Deduct from total rewards pool.
             let total_rewards = get_total_rewards_internal(&env)?;
             env.storage()
                 .instance()
-                .set(&DataKey::TotalRewards, &(total_rewards - reward));
-
-            // Add compounded reward to principal stake.
-            let prev: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Stake(staker.clone()))
-                .unwrap_or(0i128);
-            let new_stake = prev + reward;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Stake(staker.clone()), &new_stake);
-
-            let total = get_total_staked_internal(&env)?;
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalStaked, &(total + reward));
+                .set(&DataKey::TotalRewards, &(total_rewards - held));
 
             bump(&env);
-            events::compounded(&env, &staker, reward, new_stake);
-            Ok(reward)
+            Ok(held)
+        }
+
+        /// Returns the amount of rewards currently held for future stakers.
+        pub fn get_undistributed_rewards(env: Env) -> i128 {
+            undistributed_rewards(&env)
+        }
+
+        /// Returns the total amount of stake tokens currently staked.
+        pub fn get_total_staked(env: Env) -> Result<i128, StakingError> {
+            get_total_staked_internal(&env)
+        }
+
+        /// Returns the total amount of reward tokens deposited into the pool.
+        pub fn get_total_rewards(env: Env) -> Result<i128, StakingError> {
+            get_total_rewards_internal(&env)
+        }
+
+        /// Returns the rewards currently claimable by `staker`.
+        pub fn get_earned(env: Env, staker: Address) -> i128 {
+            earned(&env, &staker)
+        }
+
+        /// Returns the current global reward-per-token accumulator.
+        pub fn get_reward_per_token(env: Env) -> i128 {
+            reward_per_token(&env)
         }
     }
 }

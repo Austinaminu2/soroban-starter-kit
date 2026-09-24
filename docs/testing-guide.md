@@ -211,3 +211,59 @@ cargo test -p soroban-token-template
 ```
 
 Because the snapshots are gitignored, there is no diff to review or commit — regenerating them simply refreshes your local baseline. If you want a change to ledger state or auth calls to be visible in code review, assert on it explicitly in the test (e.g. `env.events().all()` or `client.balance(...)`) rather than relying on the snapshot.
+Review the diff with `git diff` before committing — unexpected changes to auth entries or storage keys are a signal that something is wrong.
+
+---
+
+## Benchmarks
+
+Benchmarks live in `benches/benches/` and use [Criterion](https://bheisler.github.io/criterion.rs/book/). They measure the compute unit (CU) cost of hot paths so regressions are caught before they reach mainnet.
+
+```bash
+# Run all benchmarks
+cargo bench
+
+# Run only token benchmarks
+cargo bench -p contract-benchmarks --bench token_ops
+
+# Save a named baseline for later comparison
+cargo bench --save-baseline before-optimization
+
+# Compare against a saved baseline
+cargo bench --baseline before-optimization
+```
+
+**When to write a benchmark:**
+- A hot path whose CU cost matters (token transfer, escrow state transitions).
+- Before and after an optimization, to prove the change is worthwhile.
+
+**When _not_ to benchmark:**
+- Cold paths that run once per contract deployment.
+- Anything whose cost is dominated by host functions you cannot change.
+
+---
+
+## Fuzz Tests
+
+Fuzz tests live in `fuzz/fuzz_targets/` and use [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz). They feed raw bytes into contract entry points to find panics or unexpected errors.
+
+```bash
+# Run a fuzz target for a fixed number of iterations
+cargo fuzz run fuzz_target_1 -- -runs=100000
+```
+
+**When to write a fuzz test:**
+- Parsing untrusted input (e.g. a serialized payload).
+- Any function that must never panic regardless of input.
+
+---
+
+## Running the Full Suite
+
+```bash
+# Unit + property + integration + snapshot tests
+cargo test --workspace
+
+# Everything, including benchmarks
+cargo test --workspace && cargo bench
+```
