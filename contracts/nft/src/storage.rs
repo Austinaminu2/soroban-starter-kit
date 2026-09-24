@@ -1,7 +1,7 @@
 // `#[contracttype]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
-use soroban_sdk::{String, contracttype};
+use soroban_sdk::{Address, String, contracttype};
 
 /// Instance-storage keys (shared TTL for contract-level data).
 #[contracttype]
@@ -13,6 +13,10 @@ pub enum DataKey {
     TotalSupply,
     MaxSupply,
     Initialized,
+    /// Collection-level default royalty in basis points (0–10 000).
+    RoyaltyBps,
+    /// Collection-level default royalty recipient.
+    RoyaltyRecipient,
 }
 
 /// Persistent-storage keys (per-key TTL for per-token data).
@@ -22,6 +26,10 @@ pub enum TokenKey {
     Owner(u32),
     Approval(u32),
     Uri(u32),
+    /// Optional per-token royalty override in basis points (0–10 000).
+    TokenRoyaltyBps(u32),
+    /// Optional per-token royalty recipient override.
+    TokenRoyaltyRecipient(u32),
 }
 
 #[contracttype]
@@ -30,4 +38,14 @@ pub struct TokenMetadata {
     pub name: String,
     pub symbol: String,
     pub token_uri: String,
+}
+
+/// Return value of [`NftContract::royalty_info`].
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoyaltyInfo {
+    /// Recipient of the royalty payment.
+    pub recipient: Address,
+    /// Royalty amount for the given `sale_price` (already computed).
+    pub amount: i128,
 }

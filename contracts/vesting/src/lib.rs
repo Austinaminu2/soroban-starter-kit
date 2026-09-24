@@ -6,6 +6,9 @@
 //! beneficiary claims vested tokens over time and the admin may revoke the
 //! unvested remainder.
 
+#[cfg(test)]
+extern crate std;
+
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
 mod errors;
@@ -18,12 +21,22 @@ mod prop_test;
 mod test;
 
 pub use errors::VestingError;
-pub use storage::{DataKey, VestingInfo};
+pub use storage::{BeneficiarySchedule, DataKey, VestingInfo};
 
-use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_instance};
+use soroban_common::{
+    LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_instance, extend_ttl_persistent,
+};
 
 fn bump(env: &Env) {
     extend_ttl_instance(env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+}
+
+/// Extend the TTL of a beneficiary's persistent `Schedule` entry. Instance
+/// storage TTL (bumped by `bump`) does not cover persistent entries — each
+/// one needs its own extension or it can be archived independently of the
+/// rest of the contract's state.
+fn bump_schedule(env: &Env, schedule_key: &DataKey) {
+    extend_ttl_persistent(env, schedule_key, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
 }
 
 /// Returns the number of tokens vested as of `ledger`, ignoring already-claimed tokens.
@@ -134,14 +147,8 @@ mod contract {
                 return Err(VestingError::ScheduleAlreadyExists);
             }
 
-            // Pull tokens from admin into the contract.
-            token::Client::new(&env, &token).transfer(
-                &admin,
-                &env.current_contract_address(),
-                &amount,
-            );
-
-            // Store the new schedule
+            // Store the new schedule before pulling funds from the admin. A failed transfer
+            // reverts this effect atomically with the rest of the transaction.
             let schedule = BeneficiarySchedule {
                 amount,
                 cliff_ledger,
@@ -151,6 +158,14 @@ mod contract {
             };
             env.storage().persistent().set(&schedule_key, &schedule);
             bump(&env);
+            bump_schedule(&env, &schedule_key);
+
+            // Pull tokens from admin into the contract.
+            token::Client::new(&env, &token).transfer(
+                &admin,
+                &env.current_contract_address(),
+                &amount,
+            );
 
             events::initialized(&env, &beneficiary, amount, cliff_ledger, end_ledger);
             Ok(())
@@ -167,7 +182,7 @@ mod contract {
         /// - [`VestingError::NotAuthorized`] if caller is not the beneficiary.
         /// - [`VestingError::NothingToClaim`] if no new tokens have vested since the last claim.
         pub fn claim(env: Env, beneficiary: Address) -> Result<i128, VestingError> {
-            let admin: Address = env
+            let _admin: Address = env
                 .storage()
                 .instance()
                 .get(&DataKey::Admin)
@@ -211,6 +226,7 @@ mod contract {
             // Update the claimed amount
             schedule.claimed += claimable;
             env.storage().persistent().set(&schedule_key, &schedule);
+            bump_schedule(&env, &schedule_key);
 
             // Transfer the claimable amount to the beneficiary
             token::Client::new(&env, &token).transfer(
@@ -273,6 +289,7 @@ mod contract {
             schedule.revoked = true;
             schedule.amount = vested;
             env.storage().persistent().set(&schedule_key, &schedule);
+            bump_schedule(&env, &schedule_key);
             // Claimed stays the same; beneficiary can still claim (vested - claimed).
             let _ = claimed; // already stored, no change needed
 
@@ -338,26 +355,12 @@ mod contract {
                 return Err(VestingError::NothingToClaim);
             }
 
-            let beneficiary: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Beneficiary)
-                .ok_or(VestingError::NotInitialized)?;
-            let token: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Token)
-                .ok_or(VestingError::NotInitialized)?;
-
-            // Mark as revoked, cap amount to zero (nothing more to claim).
-            env.storage().instance().set(&DataKey::Revoked, &true);
-            env.storage().instance().set(&DataKey::Amount, &releasable);
-            env.storage().instance().set(&DataKey::Claimed, &releasable);
             // Mark as revoked, cap amount to what's being released (nothing more to claim).
             schedule.revoked = true;
             schedule.amount = releasable;
             schedule.claimed += releasable;
             env.storage().persistent().set(&schedule_key, &schedule);
+            bump_schedule(&env, &schedule_key);
 
             // Audit log: accumulate total admin-released tokens.
             let prev_released: i128 = env

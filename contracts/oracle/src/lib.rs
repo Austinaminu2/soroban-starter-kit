@@ -6,6 +6,9 @@
 //! `get_price`, which rejects prices older than a configurable staleness
 //! threshold.
 
+#[cfg(test)]
+extern crate std;
+
 use soroban_sdk::{Address, Env, Vec, contract, contractimpl};
 
 mod errors;
@@ -303,11 +306,16 @@ mod contract {
         /// Return the median of the latest submission from each authorized publisher,
         /// rather than trusting a single caller as `get_price` does.
         ///
+        /// Submissions older than `max_staleness_seconds` are excluded from the median
+        /// to prevent stale data from offline publishers from skewing the result.
+        ///
         /// # Errors
         /// - [`OracleError::NotInitialized`] if `set_publishers` has never been called.
-        /// - [`OracleError::NoPublisherData`] if no publisher has submitted a price yet.
-        pub fn get_median_price(env: Env) -> Result<i128, OracleError> {
+        /// - [`OracleError::NoPublisherData`] if no publisher has submitted a fresh price
+        ///   (all submissions are older than `max_staleness_seconds` or no submissions exist).
+        pub fn get_median_price(env: Env, max_staleness_seconds: u64) -> Result<i128, OracleError> {
             let publishers: Vec<Address> = get_required(&env, &Publishers)?;
+            let now = env.ledger().timestamp();
 
             let mut prices: Vec<i128> = Vec::new(&env);
             for publisher in publishers.iter() {
@@ -316,7 +324,10 @@ mod contract {
                     .persistent()
                     .get::<_, PublisherSubmission>(&Submission(publisher))
                 {
-                    prices.push_back(submission.price);
+                    let age = now.saturating_sub(submission.timestamp);
+                    if age <= max_staleness_seconds {
+                        prices.push_back(submission.price);
+                    }
                 }
             }
 

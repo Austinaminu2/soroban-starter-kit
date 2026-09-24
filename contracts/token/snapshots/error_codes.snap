@@ -1,0 +1,10 @@
+TokenError::InsufficientBalance = 1
+TokenError::InsufficientAllowance = 2
+TokenError::Unauthorized = 3
+TokenError::AlreadyInitialized = 4
+TokenError::NotInitialized = 5
+TokenError::InvalidAmount = 6
+TokenError::Overflow = 7
+TokenError::InvalidNonce = 8
+TokenError::PermitExpired = 9
+TokenError::PermitSignerNotSet = 10

@@ -1,0 +1,13 @@
+EscrowError::NotAuthorized = 1
+EscrowError::InvalidState = 2
+EscrowError::DeadlinePassed = 3
+EscrowError::DeadlineNotReached = 4
+EscrowError::AlreadyInitialized = 5
+EscrowError::NotInitialized = 6
+EscrowError::InsufficientFunds = 7
+EscrowError::InvalidAmount = 8
+EscrowError::InvalidParties = 9
+EscrowError::DisputeTimeoutNotReached = 10
+EscrowError::NoDisputeTimeout = 11
+EscrowError::MilestoneNotFound = 12
+EscrowError::FeeTooHigh = 13

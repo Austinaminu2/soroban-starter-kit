@@ -1,0 +1,7 @@
+WrappedTokenError::AlreadyInitialized = 1
+WrappedTokenError::NotInitialized = 2
+WrappedTokenError::Unauthorized = 3
+WrappedTokenError::InvalidAmount = 4
+WrappedTokenError::InsufficientBalance = 5
+WrappedTokenError::InsufficientReserve = 6
+WrappedTokenError::MaxWrapExceeded = 7

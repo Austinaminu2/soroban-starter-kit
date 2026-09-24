@@ -5,7 +5,7 @@
 //! Players buy tickets while the lottery is open; the admin commits to a hashed
 //! secret then reveals it to draw verifiable random winners.
 
-use soroban_sdk::{Address, Bytes, BytesN, Env, Vec, contract, contractimpl, crypto::Hash, token};
+use soroban_sdk::{Address, BytesN, Env, Vec, contract, contractimpl, token};
 
 mod errors;
 mod events;
@@ -14,10 +14,8 @@ mod storage;
 pub use errors::LotteryError;
 pub use storage::{Commit, DataKey, LotteryInfo, LotteryState};
 
-use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
-
-/// Basis-point denominator used for prize splits (10 000 = 100 %).
-const BPS_DENOMINATOR: u32 = 10_000;
+use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, apply_bps_fee, commit_hash,
+                     entropy_hash, entropy_index, BPS_DENOMINATOR};
 
 fn bump_instance(env: &Env) {
     env.storage()
@@ -100,7 +98,7 @@ mod contract {
                     .checked_add(split)
                     .ok_or(LotteryError::InvalidWinnerConfig)?;
             }
-            if total != BPS_DENOMINATOR {
+            if total != BPS_DENOMINATOR as u32 {
                 return Err(LotteryError::InvalidWinnerConfig);
             }
 
@@ -145,7 +143,7 @@ mod contract {
             let ticket_count: u32 = env
                 .storage()
                 .persistent()
-                .get(&TicketCount(buyer.clone()))
+                .get(&TicketCount(&buyer))
                 .unwrap_or(0);
             if let Some(cap) = env
                 .storage()
@@ -159,23 +157,24 @@ mod contract {
 
             let ticket_price: i128 = get_required(&env, &TicketPrice)?;
             let token_addr: Address = get_required(&env, &Token)?;
-            token::Client::new(&env, &token_addr).transfer(
-                &buyer,
-                &env.current_contract_address(),
-                &ticket_price,
-            );
 
             let mut participants: Vec<Address> = get_required(&env, &Participants)?;
-            participants.push_back(buyer.clone());
+            participants.push_back(&buyer);
             env.storage().instance().set(&Participants, &participants);
 
             env.storage()
                 .persistent()
-                .set(&TicketCount(buyer.clone()), &(ticket_count + 1));
+                .set(&TicketCount(&buyer), &(ticket_count + 1));
             env.storage().persistent().extend_ttl(
-                &TicketCount(buyer.clone()),
+                &TicketCount(&buyer),
                 LEDGER_LIFETIME_THRESHOLD,
                 LEDGER_BUMP_AMOUNT,
+            );
+
+            token::Client::new(&env, &token_addr).transfer(
+                &buyer,
+                &env.current_contract_address(),
+                &ticket_price,
             );
 
             bump_instance(&env);
@@ -262,10 +261,7 @@ mod contract {
             }
 
             // Verify commitment: SHA-256(secret ++ salt) must match stored hash.
-            let mut preimage = Bytes::new(&env);
-            preimage.extend_from_array(&secret.to_array());
-            preimage.extend_from_array(&salt.to_array());
-            let computed: BytesN<32> = env.crypto().sha256(&preimage).into();
+            let computed: BytesN<32> = commit_hash(&env, &secret, &salt).into();
 
             let stored_commit: Commit = get_required(&env, &Commit)?;
             if computed != stored_commit.hash {
@@ -280,7 +276,7 @@ mod contract {
             let mut seen: Vec<Address> = Vec::new(&env);
             for p in participants.iter() {
                 if !seen.contains(&p) {
-                    seen.push_back(p.clone());
+                    seen.push_back(&p);
                 }
             }
             if seen.len() < winner_count {
@@ -293,47 +289,31 @@ mod contract {
 
             for round in 0..winner_count {
                 // Derive this round's winner index from hash(secret ++ salt ++ ledger ++ round).
-                let mut entropy_input = Bytes::new(&env);
-                entropy_input.extend_from_array(&secret.to_array());
-                entropy_input.extend_from_array(&salt.to_array());
-                entropy_input.extend_from_array(&ledger_bytes);
-                entropy_input.extend_from_array(&round.to_be_bytes());
-                let entropy: Hash<32> = env.crypto().sha256(&entropy_input);
-                let entropy_bytes = entropy.to_array();
-                #[allow(clippy::indexing_slicing)] // sha256 output is always 32 bytes
-                let idx_raw = u64::from_be_bytes([
-                    entropy_bytes[24],
-                    entropy_bytes[25],
-                    entropy_bytes[26],
-                    entropy_bytes[27],
-                    entropy_bytes[28],
-                    entropy_bytes[29],
-                    entropy_bytes[30],
-                    entropy_bytes[31],
-                ]);
+                let round_bytes = round.to_be_bytes();
+                let entropy = entropy_hash(&env, &secret, &salt, &ledger_bytes);
+                let idx = entropy_index(&entropy, pool.len());
 
-                #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-                let pool_len = pool.len() as u64;
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::as_conversions,
-                    clippy::arithmetic_side_effects,
-                    clippy::integer_division
-                )]
-                let idx = (idx_raw % pool_len) as u32;
                 #[allow(clippy::unwrap_used)] // idx is derived from modulo of len, always in bounds
                 let winner = pool.get(idx).unwrap();
-                winners.push_back(winner.clone());
+                winners.push_back(&winner);
 
                 // Remove every ticket held by this winner so they can't be drawn again.
                 let mut remaining = Vec::new(&env);
                 for p in pool.iter() {
                     if p != winner {
-                        remaining.push_back(p.clone());
+                        remaining.push_back(&p);
                     }
                 }
                 pool = remaining;
             }
+
+            // Mark the draw complete before distributing the prize pool. If any transfer fails,
+            // the transaction reverts this state transition together with the failed call.
+            env.storage().instance().set(&State, &LotteryState::Drawn);
+            env.storage().instance().set(&Winners, &winners);
+            #[allow(clippy::unwrap_used)] // winner_count >= 1, validated at initialize
+            let first_winner = winners.get(0).unwrap();
+            env.storage().instance().set(&Winner, &first_winner);
 
             // Distribute the prize pool according to the configured splits.
             let ticket_price: i128 = get_required(&env, &TicketPrice)?;
@@ -348,16 +328,10 @@ mod contract {
                 #[allow(clippy::unwrap_used)]
                 let split = prize_splits.get(i).unwrap();
                 #[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
-                let amount = (total_prize * split as i128) / BPS_DENOMINATOR as i128;
+                let amount = apply_bps_fee(total_prize, split).unwrap_or(0);
                 token_client.transfer(&env.current_contract_address(), &winner, &amount);
                 events::winner_drawn(&env, &winner, amount);
             }
-
-            env.storage().instance().set(&State, &LotteryState::Drawn);
-            env.storage().instance().set(&Winners, &winners);
-            #[allow(clippy::unwrap_used)] // winner_count >= 1, validated at initialize
-            let first_winner = winners.get(0).unwrap();
-            env.storage().instance().set(&Winner, &first_winner);
 
             bump_instance(&env);
             Ok(winners)
@@ -397,7 +371,7 @@ mod contract {
                         ticket_count += 1;
                     }
                 } else {
-                    remaining.push_back(p.clone());
+                    remaining.push_back(&p);
                 }
             }
             if ticket_count == 0 {
@@ -405,53 +379,9 @@ mod contract {
             }
             env.storage().instance().set(&Participants, &remaining);
 
-            // Derive winner index from hash(secret ++ salt ++ participants_count).
-            let count = participants.len() as u64;
-            let count_bytes = count.to_be_bytes();
-            let mut entropy_input = Bytes::new(&env);
-            entropy_input.extend_from_array(&secret.to_array());
-            entropy_input.extend_from_array(&salt.to_array());
-            entropy_input.extend_from_array(&count_bytes);
-            let entropy: Hash<32> = env.crypto().sha256(&entropy_input);
-            let entropy_bytes = entropy.to_array();
-            // Use last 8 bytes as u64 for modulo.
-            let idx_raw = u64::from_be_bytes([
-                entropy_bytes[24],
-                entropy_bytes[25],
-                entropy_bytes[26],
-                entropy_bytes[27],
-                entropy_bytes[28],
-                entropy_bytes[29],
-                entropy_bytes[30],
-                entropy_bytes[31],
-            ]);
-
-            let participants: Vec<Address> = get_required(&env, &Participants)?;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::arithmetic_side_effects,
-                clippy::as_conversions
-            )]
-            let count = participants.len() as u64;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::arithmetic_side_effects,
-                clippy::as_conversions
-            )]
-            let winner_idx = (idx_raw % count) as u32;
-            #[allow(clippy::unwrap_used)]
-            // winner_idx is derived from modulo of len, always in bounds
-            let winner = participants.get(winner_idx).unwrap();
-
             let ticket_price: i128 = get_required(&env, &TicketPrice)?;
             #[allow(clippy::arithmetic_side_effects)]
             let refund_amount = ticket_price * ticket_count;
-            #[allow(
-                clippy::arithmetic_side_effects,
-                clippy::cast_possible_truncation,
-                clippy::as_conversions
-            )]
-            let prize = ticket_price * count as i128;
             let token_addr: Address = get_required(&env, &Token)?;
             token::Client::new(&env, &token_addr).transfer(
                 &env.current_contract_address(),
@@ -503,6 +433,8 @@ mod contract {
                 return Err(LotteryError::DrawNotDone);
             }
             get_required(&env, &Winners)
+        }
+
         /// Return how many tickets `buyer` has purchased so far.
         #[must_use]
         pub fn get_ticket_count(env: Env, buyer: Address) -> u32 {
@@ -515,3 +447,6 @@ mod contract {
 }
 
 mod test;
+
+#[cfg(test)]
+mod prop_test;

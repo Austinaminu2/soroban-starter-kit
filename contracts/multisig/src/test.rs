@@ -4,7 +4,7 @@
 use super::*;
 use soroban_sdk::{
     Address, Env, FromVal, IntoVal, Symbol, contract, contractimpl,
-    testutils::{Address as _, Events as _},
+    testutils::{Address as _, Events as _, Ledger as _},
     vec,
 };
 
@@ -30,6 +30,7 @@ impl CounterContract {
     }
 }
 
+/// Helper: create a 2-of-3 multisig with uniform weights (no weights param).
 fn create_multisig<'a>(
     env: &'a Env,
 ) -> (
@@ -45,7 +46,11 @@ fn create_multisig<'a>(
     let contract_address = env.register_contract(None, MultisigContract);
     let client = MultisigContractClient::new(env, &contract_address);
 
-    client.initialize(&vec![env, alice.clone(), bob.clone(), carol.clone()], &2);
+    client.initialize(
+        &vec![env, alice.clone(), bob.clone(), carol.clone()],
+        &2,
+        &None,
+    );
 
     (client, alice, bob, carol, contract_address)
 }
@@ -82,7 +87,7 @@ fn initialize_rejects_zero_threshold() {
     let contract_address = env.register_contract(None, MultisigContract);
     let client = MultisigContractClient::new(&env, &contract_address);
 
-    client.initialize(&vec![&env, alice], &0);
+    client.initialize(&vec![&env, alice], &0, &None);
 }
 
 #[test]
@@ -95,7 +100,7 @@ fn initialize_rejects_duplicate_signers() {
     let contract_address = env.register_contract(None, MultisigContract);
     let client = MultisigContractClient::new(&env, &contract_address);
 
-    client.initialize(&vec![&env, alice.clone(), alice], &1);
+    client.initialize(&vec![&env, alice.clone(), alice], &1, &None);
 }
 
 #[test]
@@ -105,7 +110,7 @@ fn add_signer_with_threshold_approvals_updates_signer_set() {
     let (client, alice, bob, carol, _) = create_multisig(&env);
     let dave = Address::generate(&env);
 
-    client.add_signer(&vec![&env, alice.clone(), bob.clone()], &dave, &3);
+    client.add_signer(&vec![&env, alice.clone(), bob.clone()], &dave, &1, &3);
 
     assert_eq!(client.get_threshold(), Some(3));
     assert_eq!(client.get_signers(), vec![&env, alice, bob, carol, dave]);
@@ -119,7 +124,7 @@ fn add_signer_rejects_insufficient_approvals() {
     let (client, alice, _, _, _) = create_multisig(&env);
     let dave = Address::generate(&env);
 
-    client.add_signer(&vec![&env, alice], &dave, &2);
+    client.add_signer(&vec![&env, alice], &dave, &1, &2);
 }
 
 #[test]
@@ -366,7 +371,7 @@ fn cleanup_expired_removes_proposal_and_emits_event() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #11)")]
+#[should_panic(expected = "Error(Contract, #13)")]
 fn cleanup_not_yet_expired_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -383,4 +388,272 @@ fn cleanup_not_yet_expired_fails() {
 
     // Not yet expired — should fail
     client.cleanup_expired(&tx_id);
+}
+
+// ── #825 weighted voting tests ───────────────────────────────────────────────
+
+/// Helper: weighted multisig where alice=3, bob=2, carol=1; threshold=4.
+fn create_weighted_multisig<'a>(
+    env: &'a Env,
+) -> (
+    MultisigContractClient<'a>,
+    Address,
+    Address,
+    Address,
+) {
+    let alice = Address::generate(env);
+    let bob = Address::generate(env);
+    let carol = Address::generate(env);
+    let contract_address = env.register_contract(None, MultisigContract);
+    let client = MultisigContractClient::new(env, &contract_address);
+
+    let weights = vec![
+        env,
+        SignerWeight { signer: alice.clone(), weight: 3 },
+        SignerWeight { signer: bob.clone(),   weight: 2 },
+        SignerWeight { signer: carol.clone(), weight: 1 },
+    ];
+    // threshold = 4; alice alone (3) is not enough; alice+bob (5) is enough.
+    client.initialize(
+        &vec![env, alice.clone(), bob.clone(), carol.clone()],
+        &4,
+        &Some(weights),
+    );
+
+    (client, alice, bob, carol)
+}
+
+#[test]
+fn weighted_initialize_stores_weights() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, carol) = create_weighted_multisig(&env);
+
+    assert_eq!(client.get_signer_weight(&alice), 3);
+    assert_eq!(client.get_signer_weight(&bob),   2);
+    assert_eq!(client.get_signer_weight(&carol),  1);
+    assert_eq!(client.get_threshold(), Some(4));
+}
+
+#[test]
+fn weighted_threshold_met_with_two_heavy_signers() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _carol) = create_weighted_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+    let counter = CounterContractClient::new(&env, &target);
+
+    // alice proposes (accumulated = 3), bob signs (accumulated = 5 >= 4)
+    let tx_id = client.propose_transaction(
+        &alice,
+        &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 10u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx_id);
+    client.execute_transaction(&tx_id);
+
+    assert_eq!(counter.get(), 10);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn weighted_threshold_not_met_with_single_heavy_signer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    // alice (weight 3) alone does not meet threshold 4
+    let (client, alice, _, _) = create_weighted_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+
+    let tx_id = client.propose_transaction(
+        &alice,
+        &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 1u32.into_val(&env)],
+        &100u32,
+    );
+    // should panic: weight 3 < threshold 4
+    client.execute_transaction(&tx_id);
+}
+
+#[test]
+fn weighted_accumulated_weight_stored_on_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _) = create_weighted_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+
+    let tx_id = client.propose_transaction(
+        &alice,
+        &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 1u32.into_val(&env)],
+        &100u32,
+    );
+    let tx_after_propose = client.get_transaction(&tx_id).unwrap();
+    assert_eq!(tx_after_propose.accumulated_weight, 3); // alice weight
+
+    client.sign_transaction(&bob, &tx_id);
+    let tx_after_bob = client.get_transaction(&tx_id).unwrap();
+    assert_eq!(tx_after_bob.accumulated_weight, 5); // alice(3) + bob(2)
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn initialize_rejects_zero_weight() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let contract_address = env.register_contract(None, MultisigContract);
+    let client = MultisigContractClient::new(&env, &contract_address);
+
+    let weights = vec![
+        &env,
+        SignerWeight { signer: alice.clone(), weight: 0 }, // zero weight → error
+        SignerWeight { signer: bob.clone(),   weight: 1 },
+    ];
+    client.initialize(&vec![&env, alice, bob], &1, &Some(weights));
+}
+
+// ── #826 batch execution tests ───────────────────────────────────────────────
+
+#[test]
+fn execute_batch_executes_all_ready_proposals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _, _) = create_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+    let counter = CounterContractClient::new(&env, &target);
+
+    // Propose two transactions, both signed by alice+bob (threshold=2).
+    let tx0 = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 1u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx0);
+
+    let tx1 = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 2u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx1);
+
+    let executed = client.execute_batch(&vec![&env, tx0, tx1]);
+
+    assert_eq!(executed.len(), 2);
+    assert_eq!(counter.get(), 3); // 1 + 2
+}
+
+#[test]
+fn execute_batch_skips_already_executed_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _, _) = create_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+
+    let tx_id = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 5u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx_id);
+    // Execute individually first.
+    client.execute_transaction(&tx_id);
+
+    // A second proposal that can still execute.
+    let tx1 = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 1u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx1);
+
+    // Batch: already-executed tx_id is skipped, tx1 executes.
+    let executed = client.execute_batch(&vec![&env, tx_id, tx1]);
+    assert_eq!(executed.len(), 1);
+    assert_eq!(executed.get(0).unwrap(), tx1);
+}
+
+#[test]
+fn execute_batch_skips_nonexistent_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _, _) = create_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+
+    let tx_id = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 7u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx_id);
+
+    // Include a nonexistent ID (999) alongside valid tx_id.
+    let executed = client.execute_batch(&vec![&env, 999u64, tx_id]);
+    // 999 skipped, tx_id executed.
+    assert_eq!(executed.len(), 1);
+    assert_eq!(executed.get(0).unwrap(), tx_id);
+}
+
+#[test]
+fn execute_batch_skips_threshold_not_met_proposal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _, _) = create_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+
+    // tx0: only alice signed (weight 1, threshold 2) — not ready.
+    let tx0 = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 1u32.into_val(&env)],
+        &100u32,
+    );
+
+    // tx1: alice+bob signed — ready.
+    let tx1 = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 3u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx1);
+
+    let executed = client.execute_batch(&vec![&env, tx0, tx1]);
+    assert_eq!(executed.len(), 1);
+    assert_eq!(executed.get(0).unwrap(), tx1);
+}
+
+#[test]
+fn execute_batch_emits_batch_executed_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, alice, bob, _, _) = create_multisig(&env);
+    let target = env.register_contract(None, CounterContract);
+
+    let tx_id = client.propose_transaction(
+        &alice, &target,
+        &Symbol::new(&env, "increment"),
+        &vec![&env, 1u32.into_val(&env)],
+        &100u32,
+    );
+    client.sign_transaction(&bob, &tx_id);
+
+    client.execute_batch(&vec![&env, tx_id]);
+
+    let found = env
+        .events()
+        .all()
+        .iter()
+        .any(|(_, topics, _)| topics == (Symbol::new(&env, "batch_executed"),).into_val(&env));
+    assert!(found, "batch_executed event not emitted");
 }

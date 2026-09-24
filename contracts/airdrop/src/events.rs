@@ -1,11 +1,11 @@
-use soroban_sdk::{Address, Bytes, Env, symbol_short};
+use soroban_sdk::{Address, Bytes, Env, Symbol};
 
 pub fn root_set(env: &Env, root: &Bytes) {
     env.events()
-        .publish((symbol_short!("root_set"),), root.clone());
+        .publish((Symbol::new(env, "root_set"),), root.clone());
 }
 
 pub fn claimed(env: &Env, recipient: &Address, amount: i128) {
     env.events()
-        .publish((symbol_short!("claimed"),), (recipient.clone(), amount));
+        .publish((Symbol::new(env, "claimed"),), (recipient.clone(), amount));
 }

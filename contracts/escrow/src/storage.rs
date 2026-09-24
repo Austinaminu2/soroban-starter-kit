@@ -33,8 +33,10 @@ pub enum DataKey {
     Arbiters,
     /// Number of required signatures for multi-sig resolution (`u32`).
     RequiredSignatures,
-    /// Arbiter votes for dispute resolution (`Vec<Address>`).
-    ArbiterVotes,
+    /// Arbiter votes for dispute resolution to release to seller (`Vec<Address>`).
+    ArbiterVotesRelease,
+    /// Arbiter votes for dispute resolution to refund to buyer (`Vec<Address>`).
+    ArbiterVotesRefund,
     /// Optional off-chain deal reference hash (`BytesN<32>`).
     MetadataHash,
     /// Number of ledgers after a dispute is raised before the buyer can auto-claim
@@ -242,13 +244,14 @@ mod discriminant_tests {
             DataKey::PendingUpgrade => 9,
             DataKey::Arbiters => 10,
             DataKey::RequiredSignatures => 11,
-            DataKey::ArbiterVotes => 12,
-            DataKey::MetadataHash => 13,
-            DataKey::DisputeTimeoutLedgers => 14,
-            DataKey::DisputeRaisedAt => 15,
-            DataKey::Milestones => 16,
-            DataKey::FeeBps => 17,
-            DataKey::Treasury => 18,
+            DataKey::ArbiterVotesRelease => 12,
+            DataKey::ArbiterVotesRefund => 13,
+            DataKey::MetadataHash => 14,
+            DataKey::DisputeTimeoutLedgers => 15,
+            DataKey::DisputeRaisedAt => 16,
+            DataKey::Milestones => 17,
+            DataKey::FeeBps => 18,
+            DataKey::Treasury => 19,
         }
     }
 
@@ -266,13 +269,14 @@ mod discriminant_tests {
         assert_eq!(escrow_data_key_index(&DataKey::PendingUpgrade), 9);
         assert_eq!(escrow_data_key_index(&DataKey::Arbiters), 10);
         assert_eq!(escrow_data_key_index(&DataKey::RequiredSignatures), 11);
-        assert_eq!(escrow_data_key_index(&DataKey::ArbiterVotes), 12);
-        assert_eq!(escrow_data_key_index(&DataKey::MetadataHash), 13);
-        assert_eq!(escrow_data_key_index(&DataKey::DisputeTimeoutLedgers), 14);
-        assert_eq!(escrow_data_key_index(&DataKey::DisputeRaisedAt), 15);
-        assert_eq!(escrow_data_key_index(&DataKey::Milestones), 16);
-        assert_eq!(escrow_data_key_index(&DataKey::FeeBps), 17);
-        assert_eq!(escrow_data_key_index(&DataKey::Treasury), 18);
+        assert_eq!(escrow_data_key_index(&DataKey::ArbiterVotesRelease), 12);
+        assert_eq!(escrow_data_key_index(&DataKey::ArbiterVotesRefund), 13);
+        assert_eq!(escrow_data_key_index(&DataKey::MetadataHash), 14);
+        assert_eq!(escrow_data_key_index(&DataKey::DisputeTimeoutLedgers), 15);
+        assert_eq!(escrow_data_key_index(&DataKey::DisputeRaisedAt), 16);
+        assert_eq!(escrow_data_key_index(&DataKey::Milestones), 17);
+        assert_eq!(escrow_data_key_index(&DataKey::FeeBps), 18);
+        assert_eq!(escrow_data_key_index(&DataKey::Treasury), 19);
     }
 }
 

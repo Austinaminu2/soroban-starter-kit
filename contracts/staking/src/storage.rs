@@ -28,8 +28,24 @@ pub enum DataKey {
     Version,
     /// Per-staker: whether auto-compounding is enabled (`bool`).
     Compounding(Address),
+    /// Unbonding delay in ledgers; 0 means immediate withdrawal is allowed.
+    UnbondingPeriod,
+    /// Per-staker: pending unbond request.
+    UnbondRequest(Address),
+    /// Address that receives slashed tokens (treasury / burn).
+    SlashDestination,
 }
 
 /// Scaling factor for reward-per-token fixed-point arithmetic.
 /// Using 1e12 gives enough precision for typical token amounts.
 pub const REWARD_SCALE: i128 = 1_000_000_000_000;
+
+/// Holds the state of an unbonding request for a staker.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct UnbondRequest {
+    /// Amount of stake tokens queued for withdrawal.
+    pub amount: i128,
+    /// Ledger sequence after which `withdraw` becomes valid.
+    pub available_at: u32,
+}

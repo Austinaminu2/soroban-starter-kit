@@ -1,5 +1,39 @@
 # CODEOWNERS
+#
+# Each line maps a path pattern to the team/user that must review PRs touching
+# that area. More-specific rules override broader ones (GitHub evaluates from
+# bottom to top, last matching rule wins).
 
-/contracts/ @Fidelis900
-/.github/ @Fidelis900
-/docs/ @Fidelis900
+# Global fallback — catches anything not matched below
+*                                   @Fidelis900
+
+# Shared infrastructure
+/.github/                           @Fidelis900
+/scripts/                           @Fidelis900
+/docs/                              @Fidelis900
+/benches/                           @Fidelis900
+/tests/                             @Fidelis900
+
+# Shared contract library
+/contracts/common/                  @Fidelis900
+
+# Individual contract directories
+/contracts/airdrop/                 @Fidelis900
+/contracts/auction/                 @Fidelis900
+/contracts/ballot/                  @Fidelis900
+/contracts/bonding-curve/           @Fidelis900
+/contracts/crowdfund/               @Fidelis900
+/contracts/dao/                     @Fidelis900
+/contracts/escrow/                  @Fidelis900
+/contracts/lottery/                 @Fidelis900
+/contracts/marketplace/             @Fidelis900
+/contracts/multisig/                @Fidelis900
+/contracts/nft/                     @Fidelis900
+/contracts/oracle/                  @Fidelis900
+/contracts/staking/                 @Fidelis900
+/contracts/subscription/            @Fidelis900
+/contracts/swap/                    @Fidelis900
+/contracts/timelock/                @Fidelis900
+/contracts/token/                   @Fidelis900
+/contracts/vesting/                 @Fidelis900
+/contracts/wrapped-token/           @Fidelis900

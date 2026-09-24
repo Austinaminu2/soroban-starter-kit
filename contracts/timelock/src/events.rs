@@ -26,3 +26,15 @@ pub fn cancelled(env: &Env, admin: &Address, amount: i128) {
     env.events()
         .publish((Symbol::new(env, "cancelled"), admin.clone()), amount);
 }
+
+pub fn beneficiary_reassigned(env: &Env, admin: &Address, old_beneficiary: &Address, new_beneficiary: &Address) {
+    env.events().publish(
+        (
+            Symbol::new(env, "beneficiary_reassigned"),
+            admin.clone(),
+            old_beneficiary.clone(),
+            new_beneficiary.clone(),
+        ),
+        (),
+    );
+}

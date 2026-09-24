@@ -59,7 +59,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "cancel_admin_transfer",
+              "function_name": "cancel_admin_proposal",
               "args": []
             }
           },
@@ -511,7 +511,28 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000003"
               },
               {
-                "symbol": "cancel_admin_transfer"
+                "symbol": "cancel_admin_proposal"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000003",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "admin_proposal_cancelled"
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
               }
             ],
             "data": "void"
@@ -532,7 +553,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "cancel_admin_transfer"
+                "symbol": "cancel_admin_proposal"
               }
             ],
             "data": "void"

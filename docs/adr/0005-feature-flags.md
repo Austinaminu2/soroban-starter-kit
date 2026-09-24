@@ -1,6 +1,6 @@
 # ADR-0005: Feature Flag Design
 
-- **Status**: Accepted
+- **Status**: Superseded — runtime `FeatureKey` system was never implemented; compile-time Cargo features are the actual mechanism in use (see Audit note below)
 - **Date**: 2026-06-01
 
 ## Context
@@ -15,6 +15,8 @@ Soroban contracts are immutable once deployed. Upgrading logic requires either a
 Without a deliberate flag strategy, developers either hard-code behaviour (inflexible) or scatter ad-hoc boolean checks across the codebase (unmaintainable).
 
 ## Decision
+
+> ⚠️ **Status note**: The runtime `FeatureKey` / `set_flag` / `require_feature` system described below was designed but never implemented in any contract. The mechanism actually in use across the codebase is **Cargo compile-time features** (`#[cfg(feature = "...")]` blocks declared in each contract's `Cargo.toml`). The two mechanisms are fundamentally different: compile-time features are baked in at build time and are not admin-toggleable post-deployment, and they carry none of the storage / TTL / cleanup considerations discussed here. See the Audit note at the end of this document for full details. If the runtime-toggle system is still desired, it should be implemented in `contracts/common` (matching the pattern of other cross-contract helpers there) and this ADR's status updated to `Accepted` at that point.
 
 ### Flag storage
 
@@ -94,3 +96,42 @@ env.storage().instance().remove(&FeatureKey::Flag(symbol_short!("my_feature")));
 - **Absent == disabled**: simplifies circuit-breaker semantics but means new deployments must explicitly enable features intended to be on by default.
 - **Admin dependency**: flag writes require the admin key to be live. Contracts that burn their admin (see ADR-0003) cannot toggle flags post-deployment — this is intentional for fully immutable contracts.
 - **Orphan storage risk**: flags not removed before the next upgrade persist indefinitely. The deprecation path above mitigates this; code review should verify flag cleanup in upgrade PRs.
+
+## Audit note (#888)
+
+An audit of the 13 contracts added after the original seven (`airdrop`,
+`auction`, `ballot`, `bonding-curve`, `common`, `crowdfund`, `dao`,
+`lottery`, `marketplace`, `nft`, `oracle`, `swap`, `wrapped-token`) against
+this ADR turned up a naming collision worth recording rather than a code
+drift:
+
+- **No contract — original seven or newer — actually implements the
+  `FeatureKey::Flag` / `require_feature` / admin `set_flag` runtime-toggle
+  design this ADR describes.** It documents an intended pattern, not one in
+  use yet.
+- **What the phrase "feature-flag convention" refers to in practice** is a
+  different, unrelated mechanism: a `[features]` section in `Cargo.toml`
+  (`pausable`, `upgradeable`, plus `token`'s additional `capped-supply`,
+  `freeze`, `transfer-hook`) gating `#[cfg(feature = "...")]` blocks that
+  compile a capability in or out entirely. Of the original seven, `token`
+  and `escrow` use this; `multisig` declares `pausable`/`upgradeable` in its
+  `Cargo.toml` but implements neither behind a `cfg` gate (a pre-existing,
+  out-of-scope inconsistency in the *original* set, noted here rather than
+  changed, since #888 scopes the fix to the newer 13).
+- **Auditing the newer 13 against that Cargo-feature convention**: `common`
+  is a shared library, not a contract, and declares no features itself —
+  not applicable. `wrapped-token` declares `pausable` and gates its pause
+  logic behind it, matching the convention exactly. The remaining eleven
+  (`airdrop`, `auction`, `ballot`, `bonding-curve`, `crowdfund`, `dao`,
+  `lottery`, `marketplace`, `nft`, `oracle`, `swap`) declare no
+  `pausable`/`upgradeable` features and implement no pause/upgrade
+  functionality — grepping each for `cfg(feature`, `fn pause`, `fn upgrade`,
+  and `update_current_contract_wasm` confirms none of them have a capability
+  that would need gating. This is **not drift**: nothing here is silently
+  running an admin-pausable or admin-upgradeable code path outside the
+  documented convention. It's an intentional exception per contract — none
+  of the eleven currently expose a capability that fits rule 1 in "Choosing
+  what to flag" above, so there is nothing to gate. If a future PR adds
+  pause/upgrade to one of them, it must declare the matching `[features]`
+  entry and follow the `#[cfg(feature = "...")]` pattern `token`/`escrow`/
+  `wrapped-token` already use.

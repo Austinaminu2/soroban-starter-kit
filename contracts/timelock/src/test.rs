@@ -230,3 +230,170 @@ fn test_is_releasable() {
         .with_mut(|l| l.sequence_number = release_ledger);
     assert!(client.is_releasable());
 }
+
+#[test]
+fn test_reassign_beneficiary() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, old_beneficiary, _, _, _) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    let info = client.get_info();
+    assert_eq!(info.beneficiary, old_beneficiary);
+
+    // Reassign to a new beneficiary
+    client.reassign_beneficiary(&new_beneficiary);
+
+    let updated_info = client.get_info();
+    assert_eq!(updated_info.beneficiary, new_beneficiary);
+    assert_eq!(updated_info.state, TimelockState::Active);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_reassign_beneficiary_after_release_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, release_ledger, _) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    env.ledger()
+        .with_mut(|l| l.sequence_number = release_ledger);
+    client.release();
+
+    // Should fail because already released
+    client.reassign_beneficiary(&new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_reassign_beneficiary_after_cancel_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, _, _) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    client.cancel();
+
+    // Should fail because already cancelled
+    client.reassign_beneficiary(&new_beneficiary);
+}
+
+// ── Multi-tranche release tests ──────────────────────────────────────────
+
+#[test]
+fn test_initialize_with_tranches() {
+    use soroban_sdk::Vec as SdkVec;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = env.register_contract(None, MockToken);
+
+    let addr = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &addr);
+
+    let mut tranches = SdkVec::new(&env);
+    let ledger1 = env.ledger().sequence() + 50;
+    let ledger2 = env.ledger().sequence() + 100;
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger1,
+        amount: 500,
+    });
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger2,
+        amount: 500,
+    });
+
+    client.initialize_with_tranches(&admin, &token, &beneficiary, &tranches);
+
+    let info = client.get_info();
+    assert_eq!(info.tranches.len(), 2);
+    assert_eq!(info.amount, 1_000);
+    assert_eq!(info.state, TimelockState::Active);
+}
+
+#[test]
+fn test_multi_tranche_partial_release() {
+    use soroban_sdk::Vec as SdkVec;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = env.register_contract(None, MockToken);
+
+    let addr = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &addr);
+
+    let mut tranches = SdkVec::new(&env);
+    let ledger1 = env.ledger().sequence() + 50;
+    let ledger2 = env.ledger().sequence() + 100;
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger1,
+        amount: 400,
+    });
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger2,
+        amount: 600,
+    });
+
+    client.initialize_with_tranches(&admin, &token, &beneficiary, &tranches);
+
+    // Advance to ledger1 - should release first tranche
+    env.ledger().with_mut(|l| l.sequence_number = ledger1);
+    client.release();
+
+    let info = client.get_info();
+    assert_eq!(info.state, TimelockState::Active); // Not yet fully released
+
+    // Advance to ledger2 - should release second tranche
+    env.ledger().with_mut(|l| l.sequence_number = ledger2);
+    client.release();
+
+    let info = client.get_info();
+    assert_eq!(info.state, TimelockState::Released); // Now fully released
+}
+
+#[test]
+fn test_multi_tranche_is_releasable() {
+    use soroban_sdk::Vec as SdkVec;
+
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = env.register_contract(None, MockToken);
+
+    let addr = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(&env, &addr);
+
+    let mut tranches = SdkVec::new(&env);
+    let ledger1 = env.ledger().sequence() + 50;
+    let ledger2 = env.ledger().sequence() + 100;
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger1,
+        amount: 500,
+    });
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger2,
+        amount: 500,
+    });
+
+    client.initialize_with_tranches(&admin, &token, &beneficiary, &tranches);
+
+    assert!(!client.is_releasable());
+
+    env.ledger().with_mut(|l| l.sequence_number = ledger1);
+    assert!(client.is_releasable());
+
+    env.ledger().with_mut(|l| l.sequence_number = ledger2);
+    assert!(client.is_releasable());
+}

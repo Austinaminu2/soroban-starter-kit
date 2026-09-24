@@ -7,6 +7,12 @@ description = "A production-ready Soroban N-of-M multisig wallet contract templa
 license.workspace = true
 
 [features]
+# Neither flag currently guards any code in this crate (no pause/upgrade
+# entry points exist yet) — they are reserved for parity with the other
+# contracts. Defaulted on so they take effect automatically once implemented;
+# enabling/disabling either today has no effect on the compiled WASM. See
+# docs/deployment-guide.md, "Cargo Feature Defaults".
+default = ["pausable", "upgradeable"]
 pausable = []
 upgradeable = []
 

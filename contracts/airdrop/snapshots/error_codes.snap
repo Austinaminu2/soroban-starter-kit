@@ -1,0 +1,8 @@
+AirdropError::AlreadyInitialized = 1
+AirdropError::NotInitialized = 2
+AirdropError::Unauthorized = 3
+AirdropError::RootNotSet = 4
+AirdropError::InvalidProof = 5
+AirdropError::AlreadyClaimed = 6
+AirdropError::InvalidAmount = 7
+AirdropError::ClaimWindowClosed = 8

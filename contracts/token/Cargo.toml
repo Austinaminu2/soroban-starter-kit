@@ -7,6 +7,10 @@ description = "A production-ready Soroban token contract template"
 license.workspace = true
 
 [features]
+# All five safety/governance features ship in a normal deployment (see
+# docs/deployment-guide.md, "Cargo Feature Defaults"). Deploy with
+# `--no-default-features --features <subset>` to opt out.
+default = ["pausable", "upgradeable", "capped-supply", "freeze", "transfer-hook"]
 pausable = []
 upgradeable = []
 capped-supply = []

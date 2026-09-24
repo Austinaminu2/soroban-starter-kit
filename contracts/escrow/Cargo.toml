@@ -7,6 +7,12 @@ description = "A production-ready Soroban escrow contract template"
 license.workspace = true
 
 [features]
+# `pausable` gates pause()/unpause() and the propose_upgrade()/execute_upgrade()
+# timelock pair, and ships by default (see docs/deployment-guide.md, "Cargo
+# Feature Defaults"). `upgradeable` is declared for parity with the other
+# contracts but currently guards no production code in this crate — it is
+# left out of `default` since enabling it has no effect.
+default = ["pausable"]
 pausable = []
 upgradeable = []
 

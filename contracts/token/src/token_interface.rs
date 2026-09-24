@@ -24,6 +24,10 @@ pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
 
 pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
     from.require_auth();
+    #[cfg(feature = "pausable")]
+    if let Err(e) = require_not_paused(&env) {
+        panic_with_error!(&env, e);
+    }
     set_allowance(
         &env,
         from.clone(),

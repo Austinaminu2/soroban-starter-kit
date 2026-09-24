@@ -12,7 +12,7 @@ mod events;
 mod storage;
 
 pub use errors::SubscriptionError;
-pub use storage::{DataKey, SubscriptionInfo};
+pub use storage::{DataKey, Plan, SubscriptionInfo};
 
 use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
 
@@ -100,7 +100,7 @@ mod contract {
                 .instance()
                 .get(&DataKey::Provider)
                 .ok_or(SubscriptionError::NotInitialized)?;
-            
+
             provider.require_auth();
 
             if amount <= 0 {
@@ -131,6 +131,11 @@ mod contract {
 
         /// Update an existing plan's status. Only the provider (admin) can call this.
         ///
+        /// Deactivating a plan (`active = false`) only prevents **new subscriptions** from
+        /// being created for this plan. Existing subscribers who are already subscribed to
+        /// the plan will continue to be charged on their normal billing cycle. To stop
+        /// billing for existing subscribers, they must call `cancel` individually.
+        ///
         /// # Errors
         ///
         /// Returns [`SubscriptionError::NotInitialized`] if the contract is not initialized.
@@ -146,7 +151,7 @@ mod contract {
                 .instance()
                 .get(&DataKey::Provider)
                 .ok_or(SubscriptionError::NotInitialized)?;
-            
+
             provider.require_auth();
 
             let key = DataKey::Plan(plan_id.clone());
@@ -202,7 +207,11 @@ mod contract {
             subscriber.require_auth();
 
             let sub_key = DataKey::Subscription(subscriber.clone());
-            if let Some(existing) = env.storage().persistent().get::<_, SubscriptionInfo>(&sub_key) {
+            if let Some(existing) = env
+                .storage()
+                .persistent()
+                .get::<_, SubscriptionInfo>(&sub_key)
+            {
                 if existing.active {
                     return Err(SubscriptionError::AlreadySubscribed);
                 }
@@ -223,7 +232,13 @@ mod contract {
             bump_subscription(&env, &subscriber);
             bump_instance(&env);
 
-            events::subscribed(&env, &subscriber, &info.plan_id, plan.amount, plan.interval_ledgers);
+            events::subscribed(
+                &env,
+                &subscriber,
+                &info.plan_id,
+                plan.amount,
+                plan.interval_ledgers,
+            );
             Ok(())
         }
 
@@ -267,7 +282,7 @@ mod contract {
             }
 
             let current_ledger = env.ledger().sequence();
-            
+
             // Check if trial period is still active
             if !info.trial_completed {
                 if current_ledger < info.last_charged_ledger + info.trial_ledgers {
@@ -371,3 +386,6 @@ mod contract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod prop_test;

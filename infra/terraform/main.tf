@@ -20,6 +20,12 @@ locals {
     var.network == "testnet" ? "https://soroban-testnet.stellar.org" :
     "http://localhost:8000"
   )
+
+  network_passphrase = (
+    var.network == "mainnet" ? "Public Global Stellar Network ; September 2015" :
+    var.network == "testnet" ? "Test SDF Network ; September 2015" :
+    var.network_passphrase
+  )
 }
 
 # ── Stellar account setup ─────────────────────────────────────────────────────
@@ -34,9 +40,7 @@ resource "null_resource" "stellar_account_setup" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
       set -euo pipefail
-      stellar keys add admin \
-        --secret-key "$(cat '${var.admin_key_path}')" \
-        --overwrite
+      cat '${var.admin_key_path}' | stellar keys add admin --secret-key - --overwrite
       stellar keys address admin | tr -d '\n' > '${path.module}/.admin_address'
     EOT
   }
@@ -92,7 +96,7 @@ resource "null_resource" "deploy_token_contract" {
         --source admin \
         --network '${var.network}' \
         --rpc-url '${local.rpc_url}' \
-        --network-passphrase '${var.network_passphrase}' \
+        --network-passphrase '${local.network_passphrase}' \
         | tr -d '\n' > '${path.module}/.token_contract_id'
       echo "Token contract deployed: $(cat '${path.module}/.token_contract_id')"
     EOT
@@ -127,7 +131,7 @@ resource "null_resource" "deploy_escrow_contract" {
         --source admin \
         --network '${var.network}' \
         --rpc-url '${local.rpc_url}' \
-        --network-passphrase '${var.network_passphrase}' \
+        --network-passphrase '${local.network_passphrase}' \
         | tr -d '\n' > '${path.module}/.escrow_contract_id'
       echo "Escrow contract deployed: $(cat '${path.module}/.escrow_contract_id')"
     EOT
@@ -161,7 +165,7 @@ resource "null_resource" "init_token_contract" {
         --source admin \
         --network '${var.network}' \
         --rpc-url '${local.rpc_url}' \
-        --network-passphrase '${var.network_passphrase}' \
+        --network-passphrase '${local.network_passphrase}' \
         -- initialize \
         --admin "$ADMIN" \
         --decimal 7 \

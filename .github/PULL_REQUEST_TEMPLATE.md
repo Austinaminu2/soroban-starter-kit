@@ -1,24 +1,39 @@
-## Description
+## Summary
 
-Describe the changes in this pull request.
+Describe the changes in this PR — what problem does it solve and how?
 
-Closes #521
+## Related Issue(s)
+
+Closes #
+
+<!-- Add more lines if this PR addresses multiple issues:
+Closes #
+Closes #
+-->
 
 ## Type of Change
 
 - [ ] Bug fix
 - [ ] New feature
 - [ ] Documentation update
-- [ ] Refactor
+- [ ] Refactor / chore
 - [ ] Other
 
-## Testing Done
+## Test Plan
 
-Describe the tests or checks you ran.
+Describe how you tested these changes. Check all that apply:
+
+- [ ] Built contracts locally (`cargo build --target wasm32-unknown-unknown`)
+- [ ] Ran unit tests (`cargo test`)
+- [ ] Ran integration / smoke tests (`./scripts/smoke-test.sh`)
+- [ ] Ran linter and formatter (`./scripts/clippy-all.sh` / `cargo fmt`)
+- [ ] Tested in devcontainer / Codespace
+- [ ] No automated tests applicable — reason: <!-- explain -->
 
 ## Checklist
 
-- [ ] I have reviewed my changes.
-- [ ] I have added or updated documentation where needed.
-- [ ] I have tested the changes locally where applicable.
-- [ ] My changes do not introduce new warnings or errors.
+- [ ] My branch is up to date with `main`
+- [ ] I have reviewed my own diff
+- [ ] I have added or updated documentation where needed
+- [ ] My changes do not introduce new compiler warnings or clippy lints
+- [ ] Any new scripts are executable (`chmod +x`) and have a usage comment

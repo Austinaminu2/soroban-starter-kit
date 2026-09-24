@@ -134,21 +134,56 @@ fn resolve_multisig(
 
     caller.require_auth();
 
+    // Separate vote tracking by direction
+    let votes_key = if release_to_seller_flag {
+        DataKey::ArbiterVotesRelease
+    } else {
+        DataKey::ArbiterVotesRefund
+    };
+
     let mut votes: soroban_sdk::Vec<Address> = env
         .storage()
         .instance()
-        .get(&DataKey::ArbiterVotes)
+        .get(&votes_key)
         .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
 
-    if !votes.iter().any(|v| v == caller) {
-        votes.push_back(caller.clone());
+    // Check if arbiter already voted for this direction
+    if votes.iter().any(|v| v == caller) {
+        // Already voted for this direction, no-op
+        return Ok(());
     }
 
-    env.storage().instance().set(&DataKey::ArbiterVotes, &votes);
+    // Check if arbiter already voted for the opposite direction
+    let opposite_key = if release_to_seller_flag {
+        DataKey::ArbiterVotesRefund
+    } else {
+        DataKey::ArbiterVotesRelease
+    };
+
+    let opposite_votes: soroban_sdk::Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&opposite_key)
+        .unwrap_or_else(|| soroban_sdk::Vec::new(&env));
+
+    if opposite_votes.iter().any(|v| v == caller) {
+        // Arbiter already voted for the opposite direction - reject conflicting vote
+        return Err(EscrowError::NotAuthorized);
+    }
+
+    // Record the vote for this direction
+    votes.push_back(caller.clone());
+    env.storage().instance().set(&votes_key, &votes);
 
     #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
     if votes.len() as u32 >= required_sigs {
-        env.storage().instance().remove(&DataKey::ArbiterVotes);
+        // Threshold reached for this direction - resolve the dispute
+        env.storage()
+            .instance()
+            .remove(&DataKey::ArbiterVotesRelease);
+        env.storage()
+            .instance()
+            .remove(&DataKey::ArbiterVotesRefund);
         extend_ttl(&env);
         if release_to_seller_flag {
             env.storage()

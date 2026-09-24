@@ -19,10 +19,13 @@ We adopt an **on-chain vote accumulation pattern** for multi-sig arbiter resolut
 
 Each arbiter in an M-of-N group can independently vote to release or refund escrow funds:
 
-1. Arbiters call `vote_resolve(escrow_id, resolution_type)` — either `Release` or `Refund`
-2. Each vote is recorded on-chain in persistent storage: `ArbiterVotes(escrow_id)` → `Vec<Address>`
-3. When the vote count reaches the threshold `required_signatures`, the transaction executes automatically
-4. The resolution is atomic: funds transfer and state updates happen in a single transaction
+1. Arbiters call `resolve_dispute(caller, release_to_seller_flag)` — either `true` (Release) or `false` (Refund)
+2. Each vote is recorded on-chain in persistent storage separately by direction:
+    - `ArbiterVotesRelease` → `Vec<Address>` for votes to release to seller
+    - `ArbiterVotesRefund` → `Vec<Address>` for votes to refund to buyer
+3. An arbiter who has already voted for one direction cannot vote for the opposite direction
+4. When the vote count **for a single direction** reaches the threshold `required_signatures`, the transaction executes automatically in that direction
+5. The resolution is atomic: funds transfer and state updates happen in a single transaction
 
 ### Benefits of on-chain accumulation
 
@@ -55,29 +58,31 @@ Each arbiter in an M-of-N group can independently vote to release or refund escr
 
 ## Alternatives Considered
 
-| Alternative | Pros | Cons |
-|-------------|------|------|
-| **Single arbiter (status quo)** | Simple, low gas, fast | Single point of failure; centralization risk; key compromise is catastrophic |
-| **Off-chain multi-sig collection** | Simpler for arbiters; fewer transactions | Requires off-chain coordination; no transparency; no atomic guarantees; arbiters must trust submitter |
-| **Threshold cryptography (MPC)** | Strong security; single transaction | Complex to operate; specialized infrastructure; longer setup; not Stellar-native |
-| **Timelock with escalation** | Avoids arbiters; deterministic | Slow; unfair to sellers; doesn't resolve disputes |
-| **On-chain DAO vote (this ADR)** | Transparent; atomic; fault-tolerant; Stellar-native | More gas; higher latency; arbiters must stay online; votes are immutable |
+| Alternative                        | Pros                                                | Cons                                                                                                  |
+| ---------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Single arbiter (status quo)**    | Simple, low gas, fast                               | Single point of failure; centralization risk; key compromise is catastrophic                          |
+| **Off-chain multi-sig collection** | Simpler for arbiters; fewer transactions            | Requires off-chain coordination; no transparency; no atomic guarantees; arbiters must trust submitter |
+| **Threshold cryptography (MPC)**   | Strong security; single transaction                 | Complex to operate; specialized infrastructure; longer setup; not Stellar-native                      |
+| **Timelock with escalation**       | Avoids arbiters; deterministic                      | Slow; unfair to sellers; doesn't resolve disputes                                                     |
+| **On-chain DAO vote (this ADR)**   | Transparent; atomic; fault-tolerant; Stellar-native | More gas; higher latency; arbiters must stay online; votes are immutable                              |
 
 ## Migration and Upgrade Path
 
 ### For existing single-arbiter escrows
 
 1. Escrow initialization includes an optional `arbiters` field:
-   - If `arbiters` is empty/None → use legacy single-arbiter flow
-   - If `arbiters` is non-empty → use multi-sig vote accumulation
+    - If `arbiters` is empty/None → use legacy single-arbiter flow
+    - If `arbiters` is non-empty → use multi-sig vote accumulation
 
 2. No forced migration. Existing escrows remain on the single-arbiter path until manually upgraded or re-created.
 
 ### For new multi-sig escrows
 
 1. Initialize escrow with `arbiters` = [arbiter_1, arbiter_2, ..., arbiter_M] and `required_signatures` = N
-2. On dispute, arbiters independently call `vote_resolve()` until N votes accumulate
-3. Once threshold is met, funds release/refund automatically
+2. On dispute, arbiters independently call `resolve_dispute(caller, release_to_seller_flag)` with their chosen resolution
+3. Votes are tracked separately by direction (release vs refund)
+4. Once N votes accumulate **for the same direction**, funds release/refund automatically in that direction
+5. An arbiter cannot change their vote once cast
 
 ### Governance upgrade scenario
 
@@ -96,7 +101,8 @@ If arbiters become unavailable:
 pub enum DataKey {
     Arbiters,              // Vec<Address>
     RequiredSignatures,    // u32
-    ArbiterVotes,          // Vec<Address> — accumulates as arbiters vote
+    ArbiterVotesRelease,   // Vec<Address> — accumulates votes to release to seller
+    ArbiterVotesRefund,    // Vec<Address> — accumulates votes to refund to buyer
 }
 ```
 
@@ -114,22 +120,49 @@ pub fn voted(env: &Env, arbiter: &Address, escrow_id: &u64, resolution: &Symbol,
 ### Threshold check
 
 ```rust
+// Check votes for the direction the arbiter is voting for
+let votes_key = if release_to_seller_flag {
+    DataKey::ArbiterVotesRelease
+} else {
+    DataKey::ArbiterVotesRefund
+};
+
 let votes = env.storage()
-    .persistent()
-    .get::<_, Vec<Address>>(&DataKey::ArbiterVotes)
+    .instance()
+    .get::<_, Vec<Address>>(&votes_key)
     .unwrap_or_else(|| Vec::new(&env));
 
+// Reject if arbiter already voted for opposite direction
+let opposite_key = if release_to_seller_flag {
+    DataKey::ArbiterVotesRefund
+} else {
+    DataKey::ArbiterVotesRelease
+};
+
+let opposite_votes = env.storage()
+    .instance()
+    .get::<_, Vec<Address>>(&opposite_key)
+    .unwrap_or_else(|| Vec::new(&env));
+
+if opposite_votes.iter().any(|v| v == caller) {
+    return Err(EscrowError::NotAuthorized);
+}
+
+// Add vote and check threshold
+votes.push_back(caller.clone());
+env.storage().instance().set(&votes_key, &votes);
+
 if votes.len() >= required_signatures {
-    // Execute resolution atomically
+    // Execute resolution atomically in the direction with threshold votes
 }
 ```
 
 ## Known Limitations and Future Work
 
-1. **No vote revocation**: Once an arbiter votes, the vote cannot be withdrawn. Design assumes arbiters vote carefully or disputes can be re-escalated.
-2. **No tie-breaking**: If arbiters are split (e.g., 50-50 yes/no), the system deadlocks. Recommend threshold < M/2 or add a tie-breaking arbiter.
-3. **No time-based expiry**: Votes accumulate indefinitely. Very long-lived escrows may accumulate stale votes. Consider a "vote reset" after deadline + N ledgers.
-4. **Arbiter rotation**: Changing the arbiter set mid-resolution may invalidate in-flight votes. Recommend version stamps or escrow IDs.
+1. **No vote revocation**: Once an arbiter votes for a direction, they cannot change to the opposite direction. This prevents flip-flopping and ensures vote integrity. If an arbiter made an error, they should coordinate off-chain with other arbiters.
+2. **Conflicting votes deadlock**: If arbiters are split between release and refund and neither direction reaches threshold, the system deadlocks. Recommend threshold < M/2 or add a tie-breaking arbiter or timeout mechanism.
+3. **No time-based expiry**: Votes accumulate indefinitely. Very long-lived disputes may need a "vote reset" mechanism after deadline + N ledgers.
+4. **Arbiter rotation**: Changing the arbiter set mid-resolution may invalidate in-flight votes. Recommend version stamps or vote expiry tied to arbiter set changes.
 
 ## References
 

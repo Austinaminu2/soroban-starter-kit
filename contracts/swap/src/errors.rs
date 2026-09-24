@@ -1,10 +1,11 @@
+// `#[contracterror]` generates undocumented public associated items.
+#![allow(missing_docs)]
+
 use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
-// `#[contracterror]` generates undocumented public associated items.
-#[allow(missing_docs)]
 #[contracterror]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwapError {
     NotAuthorized = 1,
     SwapNotFound = 2,
@@ -17,18 +18,25 @@ pub enum SwapError {
     AlreadyInitialized = 9,
     NotInitialized = 10,
     InvalidFee = 11,
+    FeeZeroNotAllowed = 12,
+    ExecutionDelayExceeded = 13,
 }
 
 impl_display_error!(
     SwapError,
-    NotAuthorized    => "not authorized",
-    SwapNotFound     => "swap not found",
-    InvalidState     => "invalid swap state",
-    DeadlineExpired  => "swap deadline has expired",
-    InvalidAmount    => "invalid amount",
-    InvalidDeadline  => "invalid deadline",
-    AlreadyCompleted => "swap already completed",
-    AlreadyCancelled => "swap already cancelled",
+    NotAuthorized          => "not authorized",
+    SwapNotFound           => "swap not found",
+    InvalidState           => "invalid swap state",
+    DeadlineExpired        => "swap deadline has expired",
+    InvalidAmount          => "invalid amount",
+    InvalidDeadline        => "invalid deadline",
+    AlreadyCompleted       => "swap already completed",
+    AlreadyCancelled       => "swap already cancelled",
+    AlreadyInitialized     => "contract already initialized",
+    NotInitialized         => "contract not initialized",
+    InvalidFee             => "invalid fee basis points",
+    FeeZeroNotAllowed      => "fee truncated to zero or below minimum required",
+    ExecutionDelayExceeded => "maximum execution delay exceeded",
 );
 
 #[cfg(test)]
@@ -70,7 +78,3 @@ SwapError::AlreadyCancelled = {}\n",
         );
     }
 }
-    AlreadyInitialized => "contract already initialized",
-    NotInitialized    => "contract not initialized",
-    InvalidFee       => "invalid fee basis points",
-);

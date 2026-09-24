@@ -42,7 +42,7 @@ fn bytes_to_u32(data: &[u8], offset: usize) -> u32 {
 }
 
 fuzz_target!(|data: &[u8]| {
-    if data.len() < 13 {
+    if data.len() < 19 {
         return;
     }
 
@@ -70,12 +70,24 @@ fuzz_target!(|data: &[u8]| {
         Address::generate(&env),
         Address::generate(&env),
     ];
+    let admin = Address::generate(&env);
     let buyer = pool[(data[0] as usize) % pool.len()].clone();
     let seller = pool[(data[1] as usize) % pool.len()].clone();
     let arbiter = pool[(data[2] as usize) % pool.len()].clone();
 
     let amount = bytes_to_i128(data, 3);
     let deadline = bytes_to_u32(data, 11);
+    let dispute_timeout_ledgers = bytes_to_u32(data, 15).max(1);
 
-    let _ = escrow.try_initialize(&buyer, &seller, &arbiter, &token_addr, &amount, &deadline);
+    let _ = escrow.try_initialize(
+        &admin,
+        &buyer,
+        &seller,
+        &arbiter,
+        &token_addr,
+        &amount,
+        &deadline,
+        &dispute_timeout_ledgers,
+        &None,
+    );
 });

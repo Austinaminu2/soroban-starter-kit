@@ -161,7 +161,7 @@ proptest! {
         let mut total = 0i128;
         for amount in &amounts {
             let user = Address::generate(&env);
-            let mint_amount = amount.min(max_supply.saturating_sub(total));
+            let mint_amount = (*amount).min(max_supply.saturating_sub(total));
             if mint_amount > 0 {
                 client.mint(&user, &mint_amount);
                 total += mint_amount;

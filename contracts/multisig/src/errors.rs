@@ -1,7 +1,7 @@
-use soroban_common::impl_display_error;
 // `#[contracterror]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
+use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
 /// Error codes returned by [`MultisigContract`](crate::MultisigContract).
@@ -12,7 +12,7 @@ pub enum MultisigError {
     AlreadyInitialized = 1,
     /// The contract has not been initialized.
     NotInitialized = 2,
-    /// The threshold must be greater than zero and no greater than signer count.
+    /// The threshold must be greater than zero and no greater than total weight.
     InvalidThreshold = 3,
     /// Signer lists cannot be empty or contain duplicates.
     InvalidSigners = 4,
@@ -30,6 +30,14 @@ pub enum MultisigError {
     InsufficientApprovals = 10,
     /// The proposal has expired and can no longer be signed or executed.
     ProposalExpired = 11,
+    /// A signer weight of zero is not permitted.
+    InvalidWeight = 12,
+    /// `cleanup_expired` was called before the proposal's expiry ledger was reached.
+    NotYetExpired = 13,
+    /// Only the original proposer may cancel a proposal.
+    NotProposer = 14,
+    /// The signer has not signed the proposal, so there is nothing to revoke.
+    NotSigned = 15,
 }
 
 impl_display_error!(
@@ -45,50 +53,8 @@ impl_display_error!(
     ThresholdNotMet     => "threshold not met",
     InsufficientApprovals => "insufficient approvals",
     ProposalExpired     => "proposal expired",
+    InvalidWeight       => "invalid weight",
+    NotYetExpired       => "not yet expired",
+    NotProposer         => "not proposer",
+    NotSigned           => "not signed",
 );
-
-#[cfg(test)]
-mod tests {
-    extern crate std;
-
-    use super::MultisigError;
-    use std::format;
-    use std::string::String;
-
-    #[allow(clippy::as_conversions)]
-    fn render_error_code_snapshot() -> String {
-        format!(
-            "\
-MultisigError::AlreadyInitialized = {}\n\
-MultisigError::NotInitialized = {}\n\
-MultisigError::InvalidThreshold = {}\n\
-MultisigError::InvalidSigners = {}\n\
-MultisigError::NotSigner = {}\n\
-MultisigError::TransactionNotFound = {}\n\
-MultisigError::AlreadyExecuted = {}\n\
-MultisigError::AlreadySigned = {}\n\
-MultisigError::ThresholdNotMet = {}\n\
-MultisigError::InsufficientApprovals = {}\n\
-MultisigError::ProposalExpired = {}\n",
-            MultisigError::AlreadyInitialized as u32,
-            MultisigError::NotInitialized as u32,
-            MultisigError::InvalidThreshold as u32,
-            MultisigError::InvalidSigners as u32,
-            MultisigError::NotSigner as u32,
-            MultisigError::TransactionNotFound as u32,
-            MultisigError::AlreadyExecuted as u32,
-            MultisigError::AlreadySigned as u32,
-            MultisigError::ThresholdNotMet as u32,
-            MultisigError::InsufficientApprovals as u32,
-            MultisigError::ProposalExpired as u32,
-        )
-    }
-
-    #[test]
-    fn multisig_error_codes_match_snapshot() {
-        assert_eq!(
-            render_error_code_snapshot(),
-            include_str!("../snapshots/error_codes.snap")
-        );
-    }
-}

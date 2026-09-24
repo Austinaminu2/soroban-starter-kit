@@ -17,6 +17,8 @@ fn setup_nft<'a>(env: &'a Env) -> (NftContractClient<'a>, Address) {
         &String::from_str(env, "PropTest"),
         &String::from_str(env, "PT"),
         &0,
+        &None,
+        &None,
     );
     (client, admin)
 }
@@ -31,7 +33,7 @@ proptest! {
         let owner = Address::generate(&env);
 
         for token_id in 0..n {
-            client.mint(&owner, &token_id, &String::from_str(&env, "ipfs://x"));
+            client.mint(&owner, &token_id, &String::from_str(&env, "ipfs://x"), &None, &None);
         }
 
         prop_assert_eq!(client.total_supply(), n);
@@ -45,7 +47,7 @@ proptest! {
         let (client, _) = setup_nft(&env);
         let owner = Address::generate(&env);
 
-        client.mint(&owner, &token_id, &String::from_str(&env, "ipfs://x"));
+        client.mint(&owner, &token_id, &String::from_str(&env, "ipfs://x"), &None, &None);
         prop_assert_eq!(client.total_supply(), 1);
 
         client.burn(&owner, &token_id);
@@ -61,7 +63,7 @@ proptest! {
         let alice = Address::generate(&env);
         let bob = Address::generate(&env);
 
-        client.mint(&alice, &token_id, &String::from_str(&env, "ipfs://x"));
+        client.mint(&alice, &token_id, &String::from_str(&env, "ipfs://x"), &None, &None);
         let before = client.total_supply();
         client.transfer(&alice, &bob, &token_id);
         prop_assert_eq!(client.total_supply(), before);
@@ -75,7 +77,7 @@ proptest! {
         let (client, _) = setup_nft(&env);
         let owner = Address::generate(&env);
 
-        client.mint(&owner, &token_id, &String::from_str(&env, "ipfs://x"));
+        client.mint(&owner, &token_id, &String::from_str(&env, "ipfs://x"), &None, &None);
         prop_assert_eq!(client.owner_of(&token_id), owner);
     }
 }

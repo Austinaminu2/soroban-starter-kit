@@ -44,5 +44,9 @@ deploy-local: ## Deploy contracts to local node
 bench: ## Run benchmarks
 	cargo bench
 
+new-contract: ## Scaffold a new contract: make new-contract NAME=my-contract
+	@test -n "$(NAME)" || (echo "Usage: make new-contract NAME=<kebab-case-name>" && exit 1)
+	./scripts/new-contract.sh $(NAME)
+
 clean: ## Remove build artifacts
 	cargo clean

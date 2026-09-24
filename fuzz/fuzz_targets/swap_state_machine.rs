@@ -7,7 +7,10 @@
 )]
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use soroban_sdk::{Address, Env, String, testutils::Address as _};
+use soroban_sdk::{
+    Address, Env, String,
+    testutils::{Address as _, Ledger as _},
+};
 use soroban_swap_template::SwapContract;
 use soroban_token_template::TokenContract;
 
@@ -113,7 +116,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Track proposed swap IDs
-    let mut proposed_swaps: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    let mut proposed_swaps: std::vec::Vec<u32> = std::vec::Vec::new();
     let mut data_offset = 0;
 
     // Execute operations from fuzz input

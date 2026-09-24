@@ -1,8 +1,9 @@
+// `#[contracterror]` generates undocumented public associated items.
+#![allow(missing_docs)]
+
 use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
-// `#[contracterror]` generates undocumented public associated items.
-#[allow(missing_docs)]
 #[contracterror]
 #[derive(Clone, Copy, Debug)]
 pub enum TimelockError {

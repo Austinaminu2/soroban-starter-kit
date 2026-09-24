@@ -12,6 +12,8 @@ soroban-escrow-template = { path = "../contracts/escrow" }
 soroban-token-template = { path = "../contracts/token" }
 soroban-marketplace-template = { path = "../contracts/marketplace" }
 soroban-nft-template = { path = "../contracts/nft" }
+soroban-auction-template = { path = "../contracts/auction" }
+soroban-lottery-template = { path = "../contracts/lottery" }
 
 [[test]]
 name = "integration"

@@ -7,7 +7,11 @@
 )]
 #![cfg(test)]
 
-use soroban_sdk::{Address, Env, testutils::Address as _, token::StellarAssetClient};
+use soroban_sdk::{
+    Address, Env,
+    testutils::{Address as _, Ledger as _},
+    token::StellarAssetClient,
+};
 
 use crate::{StakingContract, StakingContractClient, StakingError};
 
@@ -26,17 +30,40 @@ fn make_token(env: &Env, mint_to: &Address, amount: i128) -> Address {
     addr
 }
 
-/// Returns (client, admin, stake_token, reward_token).
-/// Admin holds 10_000 of each token.
+/// Returns (client, admin, stake_token, reward_token, slash_destination).
+/// Admin holds 10_000 of each token. unbonding_period = 0 (immediate).
 fn setup(env: &Env) -> (StakingContractClient, Address, Address, Address) {
     let admin = Address::generate(env);
     let stake_token = make_token(env, &admin, 10_000);
     let reward_token = make_token(env, &admin, 10_000);
+    let slash_dest = Address::generate(env);
     let addr = env.register_contract(None, StakingContract);
     let client = StakingContractClient::new(env, &addr);
-    client.initialize(&admin, &stake_token, &reward_token);
+    client.initialize(&admin, &stake_token, &reward_token, &0, &slash_dest);
     (client, admin, stake_token, reward_token)
 }
+
+/// Setup with a non-zero unbonding period.
+fn setup_with_unbonding(
+    env: &Env,
+    unbonding_period: u32,
+) -> (StakingContractClient, Address, Address, Address, Address) {
+    let admin = Address::generate(env);
+    let stake_token = make_token(env, &admin, 10_000);
+    let reward_token = make_token(env, &admin, 10_000);
+    let slash_dest = Address::generate(env);
+    let addr = env.register_contract(None, StakingContract);
+    let client = StakingContractClient::new(env, &addr);
+    client.initialize(
+        &admin,
+        &stake_token,
+        &reward_token,
+        &unbonding_period,
+        &slash_dest,
+    );
+    (client, admin, stake_token, reward_token, slash_dest)
+}
+
 // ── unit tests ────────────────────────────────────────────────────────────────
 
 #[test]
@@ -51,7 +78,8 @@ fn test_initialize_stores_state() {
 fn test_initialize_twice_fails() {
     let env = setup_env();
     let (client, admin, stake_token, reward_token) = setup(&env);
-    let result = client.try_initialize(&admin, &stake_token, &reward_token);
+    let slash_dest = Address::generate(&env);
+    let result = client.try_initialize(&admin, &stake_token, &reward_token, &0, &slash_dest);
     assert_eq!(result, Err(Ok(StakingError::AlreadyInitialized)));
 }
 
@@ -77,7 +105,7 @@ fn test_stake_zero_fails() {
 }
 
 #[test]
-fn test_unstake_returns_tokens() {
+fn test_unstake_returns_tokens_immediately_when_no_unbonding_period() {
     let env = setup_env();
     let (client, _admin, stake_token, _reward_token) = setup(&env);
     let staker = Address::generate(&env);
@@ -116,14 +144,7 @@ fn test_unstake_with_no_stake_fails() {
 #[test]
 fn test_add_rewards_unauthorized_fails() {
     let env = setup_env();
-    let (client, _admin, _stake_token, reward_token) = setup(&env);
-    // Register a fresh contract with a different admin to test unauthorized path.
-    // Since mock_all_auths is on, we test the admin check via a separate contract.
-    let other_admin = Address::generate(&env);
-    StellarAssetClient::new(&env, &reward_token).mint(&other_admin, &500);
-    // The admin stored is `_admin`, not `other_admin`, so add_rewards must be
-    // called by the stored admin. With mock_all_auths this always passes auth,
-    // so we test the zero-amount guard instead.
+    let (client, _admin, _stake_token, _reward_token) = setup(&env);
     let result = client.try_add_rewards(&0);
     assert_eq!(result, Err(Ok(StakingError::InvalidAmount)));
 }
@@ -248,9 +269,10 @@ fn test_full_unstake_then_restake_accrues_correctly() {
 fn setup_single_asset(env: &Env) -> (StakingContractClient, Address, Address) {
     let admin = Address::generate(env);
     let token = make_token(env, &admin, 10_000);
+    let slash_dest = Address::generate(env);
     let addr = env.register_contract(None, StakingContract);
     let client = StakingContractClient::new(env, &addr);
-    client.initialize(&admin, &token, &token);
+    client.initialize(&admin, &token, &token, &0, &slash_dest);
     (client, admin, token)
 }
 
@@ -331,6 +353,194 @@ fn test_compound_no_rewards_fails() {
     assert_eq!(result, Err(Ok(crate::StakingError::NoRewards)));
 }
 
+// ── #827 unbonding period tests ───────────────────────────────────────────────
+
+/// `unstake` with an unbonding period queues a request; tokens not yet returned.
+#[test]
+fn test_unstake_queues_unbond_request() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, _slash_dest) = setup_with_unbonding(&env, 50);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &1_000);
+    client.stake(&staker, &1_000);
+    client.unstake(&staker, &600);
+
+    // Stake ledger reduced immediately.
+    assert_eq!(client.get_stake(&staker), 400);
+
+    // But tokens not yet returned — still in the contract.
+    let token_client = soroban_sdk::token::Client::new(&env, &stake_token);
+    assert_eq!(token_client.balance(&staker), 0);
+
+    // UnbondRequest should exist.
+    let req = client.get_unbond_request(&staker).unwrap();
+    assert_eq!(req.amount, 600);
+}
+
+/// `withdraw` before the unbonding period elapses is rejected.
+#[test]
+fn test_withdraw_before_period_fails() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, _slash_dest) = setup_with_unbonding(&env, 50);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &1_000);
+    client.stake(&staker, &1_000);
+    client.unstake(&staker, &1_000);
+
+    // Advance only partway through the unbonding period.
+    env.ledger().with_mut(|l| l.sequence_number += 49);
+
+    let result = client.try_withdraw(&staker);
+    assert_eq!(result, Err(Ok(StakingError::UnbondingNotComplete)));
+}
+
+/// `withdraw` after the unbonding period transfers tokens back.
+#[test]
+fn test_withdraw_after_period_succeeds() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, _slash_dest) = setup_with_unbonding(&env, 50);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &1_000);
+    client.stake(&staker, &1_000);
+    client.unstake(&staker, &1_000);
+
+    // Advance past the unbonding period.
+    env.ledger().with_mut(|l| l.sequence_number += 50);
+
+    let withdrawn = client.withdraw(&staker);
+    assert_eq!(withdrawn, 1_000);
+
+    let token_client = soroban_sdk::token::Client::new(&env, &stake_token);
+    assert_eq!(token_client.balance(&staker), 1_000);
+
+    // Request should be cleared.
+    assert!(client.get_unbond_request(&staker).is_none());
+}
+
+/// `withdraw` with no pending request fails.
+#[test]
+fn test_withdraw_no_request_fails() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, _slash_dest) = setup_with_unbonding(&env, 50);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &500);
+    client.stake(&staker, &500);
+    // Never called unstake — no UnbondRequest.
+    let result = client.try_withdraw(&staker);
+    assert_eq!(result, Err(Ok(StakingError::NoUnbondRequest)));
+}
+
+/// Regression test for #945: second `unstake` before `withdraw` should fail,
+/// preventing loss of the first request's tokens.
+#[test]
+fn test_second_unstake_before_withdraw_fails() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, _slash_dest) =
+        setup_with_unbonding(&env, 50);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &2_000);
+    client.stake(&staker, &2_000);
+
+    // First unstake: queue 500 tokens.
+    client.unstake(&staker, &500);
+    assert_eq!(client.get_stake(&staker), 1_500);
+
+    // Verify first request exists.
+    let req = client.get_unbond_request(&staker).unwrap();
+    assert_eq!(req.amount, 500);
+
+    // Second unstake should fail with UnbondRequestPending error.
+    let result = client.try_unstake(&staker, &300);
+    assert_eq!(result, Err(Ok(StakingError::UnbondRequestPending)));
+
+    // First request should still exist unchanged.
+    let req = client.get_unbond_request(&staker).unwrap();
+    assert_eq!(req.amount, 500);
+
+    // Advance past the unbonding period.
+    env.ledger().with_mut(|l| l.sequence_number += 50);
+
+    // Withdraw should return only the first unstaked amount.
+    let withdrawn = client.withdraw(&staker);
+    assert_eq!(withdrawn, 500);
+
+    let token_client = soroban_sdk::token::Client::new(&env, &stake_token);
+    assert_eq!(token_client.balance(&staker), 500);
+}
+
+// ── #828 admin slashing tests ─────────────────────────────────────────────────
+
+/// Admin can slash a staker; slashed tokens go to the destination.
+#[test]
+fn test_slash_accounting_and_balance() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, slash_dest) = setup_with_unbonding(&env, 0);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &1_000);
+    client.stake(&staker, &1_000);
+
+    let slashed = client.slash(&staker, &300);
+    assert_eq!(slashed, 300);
+
+    // Staker's on-chain balance reduced.
+    assert_eq!(client.get_stake(&staker), 700);
+    assert_eq!(client.get_total_staked(), 700);
+
+    // Slash destination received the tokens.
+    let token_client = soroban_sdk::token::Client::new(&env, &stake_token);
+    assert_eq!(token_client.balance(&slash_dest), 300);
+}
+
+/// Slash amount is capped at the staker's current balance.
+#[test]
+fn test_slash_capped_at_balance() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, slash_dest) = setup_with_unbonding(&env, 0);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &200);
+    client.stake(&staker, &200);
+
+    // Request more than staked — should be capped at 200.
+    let slashed = client.slash(&staker, &500);
+    assert_eq!(slashed, 200);
+    assert_eq!(client.get_stake(&staker), 0);
+
+    let token_client = soroban_sdk::token::Client::new(&env, &stake_token);
+    assert_eq!(token_client.balance(&slash_dest), 200);
+}
+
+/// Slashing a staker with no stake fails.
+#[test]
+fn test_slash_no_stake_fails() {
+    let env = setup_env();
+    let (client, _admin, _stake_token, _reward_token, _slash_dest) = setup_with_unbonding(&env, 0);
+
+    let staker = Address::generate(&env);
+    let result = client.try_slash(&staker, &100);
+    assert_eq!(result, Err(Ok(StakingError::NoStake)));
+}
+
+/// `slash` with amount = 0 fails.
+#[test]
+fn test_slash_zero_amount_fails() {
+    let env = setup_env();
+    let (client, _admin, stake_token, _reward_token, _slash_dest) = setup_with_unbonding(&env, 0);
+
+    let staker = Address::generate(&env);
+    StellarAssetClient::new(&env, &stake_token).mint(&staker, &500);
+    client.stake(&staker, &500);
+
+    let result = client.try_slash(&staker, &0);
+    assert_eq!(result, Err(Ok(StakingError::InvalidAmount)));
+}
+
 // ── property tests ────────────────────────────────────────────────────────────
 
 use proptest::prelude::*;
@@ -346,9 +556,10 @@ fn prop_setup_with(
     let staker = Address::generate(env);
     let stake_token = make_token(env, &staker, stake_amount);
     let reward_token = make_token(env, &admin, reward_amount);
+    let slash_dest = Address::generate(env);
     let addr = env.register_contract(None, StakingContract);
     let client = StakingContractClient::new(env, &addr);
-    client.initialize(&admin, &stake_token, &reward_token);
+    client.initialize(&admin, &stake_token, &reward_token, &0, &slash_dest);
     (client, admin, staker, stake_token, reward_token)
 }
 
@@ -390,9 +601,10 @@ proptest! {
             tc.transfer(&alice, &bob, &b_stake);
         }
         let reward_token = make_token(&env, &admin, reward);
+        let slash_dest = Address::generate(&env);
         let addr = env.register_contract(None, StakingContract);
         let client = StakingContractClient::new(&env, &addr);
-        client.initialize(&admin, &stake_token, &reward_token);
+        client.initialize(&admin, &stake_token, &reward_token, &0, &slash_dest);
 
         client.stake(&alice, &a_stake);
         client.stake(&bob, &b_stake);

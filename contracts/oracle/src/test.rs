@@ -103,3 +103,93 @@ fn test_price_update_overwrites_previous() {
     client.update_price(&9_999);
     assert_eq!(client.get_price(), 9_999);
 }
+
+// ---------------------------------------------------------------------------
+// #943 — get_median_price with staleness filter
+// ---------------------------------------------------------------------------
+
+/// get_median_price requires at least one fresh publisher submission.
+#[test]
+fn test_get_median_price_with_fresh_submissions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let pub1 = Address::generate(&env);
+    let pub2 = Address::generate(&env);
+    let pub3 = Address::generate(&env);
+    client.set_publishers(&admin, &Vec::from_array(&env, [pub1.clone(), pub2.clone(), pub3.clone()]));
+
+    // All publishers submit fresh prices at current time
+    client.submit_price(&pub1, &100);
+    client.submit_price(&pub2, &200);
+    client.submit_price(&pub3, &300);
+
+    // Median of [100, 200, 300] = 200
+    assert_eq!(client.get_median_price(&3600), 200);
+}
+
+/// Stale submissions are excluded from the median calculation.
+///
+/// Setup:
+/// - pub1 submits price 100 at timestamp 0
+/// - pub2 submits price 200 at timestamp 3600 (fresh)
+/// - pub3 submits price 300 at timestamp 0 (stale after 3600 seconds)
+/// - max_staleness = 3600 (1 hour)
+///
+/// At current time 3600:
+/// - pub1's submission age = 3600 (at boundary, included)
+/// - pub2's submission age = 0 (fresh, included)
+/// - pub3's submission age = 3600 (at boundary, included)
+/// - Median should be calculated from all three: [100, 200, 300] → 200
+#[test]
+fn test_get_median_price_excludes_stale_submissions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let pub1 = Address::generate(&env);
+    let pub2 = Address::generate(&env);
+    let pub3 = Address::generate(&env);
+    client.set_publishers(&admin, &Vec::from_array(&env, [pub1.clone(), pub2.clone(), pub3.clone()]));
+
+    // pub1 and pub3 submit at time 0
+    env.ledger().with_mut(|l| l.timestamp = 0);
+    client.submit_price(&pub1, &100);
+    client.submit_price(&pub3, &300);
+
+    // Advance time to 3600 seconds, pub2 submits fresh price
+    env.ledger().with_mut(|l| l.timestamp = 3600);
+    client.submit_price(&pub2, &200);
+
+    // At time 3600 with max_staleness_seconds = 1800 (30 minutes):
+    // - pub1 age = 3600 > 1800 (stale, excluded)
+    // - pub2 age = 0 ≤ 1800 (fresh, included)
+    // - pub3 age = 3600 > 1800 (stale, excluded)
+    // Only pub2's price [200] remains → median = 200
+    assert_eq!(client.get_median_price(&1800), 200);
+}
+
+/// get_median_price fails when all submissions are stale.
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_get_median_price_all_stale_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let pub1 = Address::generate(&env);
+    let pub2 = Address::generate(&env);
+    client.set_publishers(&admin, &Vec::from_array(&env, [pub1.clone(), pub2.clone()]));
+
+    // Publishers submit at time 0
+    env.ledger().with_mut(|l| l.timestamp = 0);
+    client.submit_price(&pub1, &100);
+    client.submit_price(&pub2, &200);
+
+    // Advance to time 5000, making all submissions older than 1000 seconds
+    env.ledger().with_mut(|l| l.timestamp = 5000);
+
+    // max_staleness = 1000 seconds, all submissions age > 1000 → NoPublisherData
+    client.get_median_price(&1000);
+}

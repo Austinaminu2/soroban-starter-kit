@@ -1,8 +1,9 @@
+// `#[contracterror]` generates undocumented public associated items.
+#![allow(missing_docs)]
+
 use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
-// `#[contracterror]` generates undocumented public associated items.
-#[allow(missing_docs)]
 #[contracterror]
 #[derive(Clone, Copy, Debug)]
 pub enum NftError {
@@ -15,19 +16,25 @@ pub enum NftError {
     NotApproved = 7,
     SupplyCapReached = 8,
     InvalidTokenId = 9,
+    /// Royalty basis points exceed 10 000 (100 %).
+    InvalidRoyalty = 10,
+    /// A royalty BPS was provided without a recipient (or vice-versa).
+    RoyaltyRecipientMissing = 11,
 }
 
 impl_display_error!(
     NftError,
-    NotAuthorized      => "not authorized",
-    AlreadyInitialized => "already initialized",
-    NotInitialized     => "not initialized",
-    TokenNotFound      => "token not found",
-    TokenAlreadyMinted => "token already minted",
-    NotOwner           => "not the token owner",
-    NotApproved        => "not approved for this token",
-    SupplyCapReached   => "supply cap reached",
-    InvalidTokenId     => "invalid token id",
+    NotAuthorized           => "not authorized",
+    AlreadyInitialized      => "already initialized",
+    NotInitialized          => "not initialized",
+    TokenNotFound           => "token not found",
+    TokenAlreadyMinted      => "token already minted",
+    NotOwner                => "not the token owner",
+    NotApproved             => "not approved for this token",
+    SupplyCapReached        => "supply cap reached",
+    InvalidTokenId          => "invalid token id",
+    InvalidRoyalty          => "royalty bps exceeds 10 000",
+    RoyaltyRecipientMissing => "royalty recipient must be set when royalty bps > 0",
 );
 
 #[cfg(test)]
@@ -50,7 +57,9 @@ NftError::TokenAlreadyMinted = {}\n\
 NftError::NotOwner = {}\n\
 NftError::NotApproved = {}\n\
 NftError::SupplyCapReached = {}\n\
-NftError::InvalidTokenId = {}\n",
+NftError::InvalidTokenId = {}\n\
+NftError::InvalidRoyalty = {}\n\
+NftError::RoyaltyRecipientMissing = {}\n",
             NftError::NotAuthorized as u32,
             NftError::AlreadyInitialized as u32,
             NftError::NotInitialized as u32,
@@ -60,6 +69,8 @@ NftError::InvalidTokenId = {}\n",
             NftError::NotApproved as u32,
             NftError::SupplyCapReached as u32,
             NftError::InvalidTokenId as u32,
+            NftError::InvalidRoyalty as u32,
+            NftError::RoyaltyRecipientMissing as u32,
         )
     }
 

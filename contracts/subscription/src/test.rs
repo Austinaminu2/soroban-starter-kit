@@ -109,7 +109,7 @@ fn test_non_admin_cannot_register_plan() {
     let basic_plan = Symbol::new(&env, "basic");
     
     // Remove mock auths to test authorization
-    env.stop_mock_all_auths();
+    env.set_auths(&[]);
     let result = client.try_register_plan(&basic_plan, &100, &50);
     assert!(result.is_err());
 }
@@ -198,7 +198,7 @@ fn test_charge_after_interval_transfers_tokens() {
     let basic_plan = Symbol::new(&env, "basic");
     
     client.register_plan(&basic_plan, &100, &50);
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500, None);
 
     env.ledger().with_mut(|l| l.sequence_number += 50);
     client.charge(&subscriber);
@@ -216,7 +216,7 @@ fn test_charge_updates_last_charged_ledger() {
     let basic_plan = Symbol::new(&env, "basic");
     
     client.register_plan(&basic_plan, &100, &50);
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500, None);
     let start = env.ledger().sequence();
 
     env.ledger().with_mut(|l| l.sequence_number += 50);
@@ -234,7 +234,7 @@ fn test_charge_multiple_times() {
     let basic_plan = Symbol::new(&env, "basic");
     
     client.register_plan(&basic_plan, &100, &50);
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500, None);
 
     env.ledger().with_mut(|l| l.sequence_number += 50);
     client.charge(&subscriber);
@@ -316,7 +316,7 @@ fn test_cancel_deactivates_subscription() {
     let basic_plan = Symbol::new(&env, "basic");
     
     client.register_plan(&basic_plan, &100, &50);
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500, None);
     client.cancel(&subscriber);
 
     let info = client.get_subscription(&subscriber).unwrap();
@@ -331,7 +331,7 @@ fn test_cancel_prevents_further_charges() {
     let basic_plan = Symbol::new(&env, "basic");
     
     client.register_plan(&basic_plan, &100, &50);
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500, None);
     client.cancel(&subscriber);
 
     env.ledger().with_mut(|l| l.sequence_number += 50);
@@ -347,7 +347,7 @@ fn test_cancel_twice_fails() {
     let basic_plan = Symbol::new(&env, "basic");
     
     client.register_plan(&basic_plan, &100, &50);
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 500, None);
     client.cancel(&subscriber);
 
     let result = client.try_cancel(&subscriber);
@@ -374,7 +374,7 @@ fn test_resubscribe_after_cancel() {
     client.register_plan(&basic_plan, &100, &50);
     client.register_plan(&premium_plan, &200, &30);
     
-    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 1_000);
+    approve_and_subscribe(&env, &client, &addr, &token, &subscriber, &basic_plan, 1_000, None);
     client.cancel(&subscriber);
 
     // Re-subscribing after cancel should succeed with a different plan.
@@ -443,7 +443,7 @@ fn test_charge_during_trial_fails() {
     env.ledger().with_mut(|l| l.sequence_number += 50);
 
     let result = client.try_charge(&subscriber);
-    assert_eq!(result, Err(Ok(SubscriptionError::IntervalNotElapsed));
+    assert_eq!(result, Err(Ok(SubscriptionError::IntervalNotElapsed)));
     let _ = provider;
 }
 

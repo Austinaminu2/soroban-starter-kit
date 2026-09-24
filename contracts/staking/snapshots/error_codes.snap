@@ -1,0 +1,10 @@
+StakingError::AlreadyInitialized = 1
+StakingError::NotInitialized = 2
+StakingError::Unauthorized = 3
+StakingError::InvalidAmount = 4
+StakingError::NoStake = 5
+StakingError::InsufficientStake = 6
+StakingError::NoRewards = 7
+StakingError::CompoundTokenMismatch = 8
+StakingError::UnbondingNotComplete = 9
+StakingError::NoUnbondRequest = 10

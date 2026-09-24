@@ -508,8 +508,10 @@ mod upgradeable_tests {
         // A zero hash is invalid for a real upgrade, but the auth check fires first.
         // We just verify the method exists and is callable by admin.
         let dummy_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
-        // This will panic because the wasm hash doesn't exist, but auth passes.
-        let _ = client.try_upgrade(&dummy_hash);
+        client.propose_upgrade(&dummy_hash);
+        // Auth passes; execute_upgrade still fails because the delay hasn't
+        // elapsed and the hash isn't a real uploaded WASM.
+        let _ = client.try_execute_upgrade();
     }
 
     #[test]
@@ -519,8 +521,11 @@ mod upgradeable_tests {
         let admin = Address::generate(&env);
         let client = init_token(&env, &admin);
         let dummy_hash = soroban_sdk::BytesN::from_array(&env, &[1u8; 32]);
-        // upgraded event is emitted before update_current_contract_wasm
-        let _ = client.try_upgrade(&dummy_hash);
+        client.propose_upgrade(&dummy_hash);
+        // Advance past the upgrade delay so execute_upgrade proceeds far enough
+        // to emit the `upgraded` event before failing on the fake WASM hash.
+        env.ledger().with_mut(|l| l.sequence_number += 20_000);
+        let _ = client.try_execute_upgrade();
 
         use soroban_sdk::{IntoVal, Symbol, testutils::Events as _};
         let all = env.events().all();
@@ -823,8 +828,6 @@ fn test_burn_from_expired_allowance() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
-#[should_panic(expected = "InvalidAction")]
 #[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_unauthorized_admin_burn_fails() {
     let env = Env::default();
@@ -970,7 +973,7 @@ fn test_accept_admin_without_proposal_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_accept_admin_by_wrong_address_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1015,7 +1018,7 @@ fn test_cancel_admin_proposal() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
+#[should_panic(expected = "Error(Auth, InvalidAction)")]
 fn test_cancel_admin_proposal_by_non_admin_fails() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1105,7 +1108,7 @@ mod transfer_hook_tests {
 
         // Hook was called
         let found = env.events().all().iter().any(|(addr, topics, _)| {
-            *addr == hook_addr
+            addr == hook_addr
                 && topics
                     == (Symbol::new(&env, "hook_called"), from.clone(), to.clone()).into_val(&env)
         });

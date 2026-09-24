@@ -1,0 +1,8 @@
+TimelockError::NotAuthorized = 1
+TimelockError::AlreadyInitialized = 2
+TimelockError::NotInitialized = 3
+TimelockError::NotYetReleasable = 4
+TimelockError::AlreadyReleased = 5
+TimelockError::AlreadyCancelled = 6
+TimelockError::InvalidAmount = 7
+TimelockError::InvalidReleaseLedger = 8

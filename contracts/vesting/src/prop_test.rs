@@ -9,8 +9,9 @@
 
 use proptest::prelude::*;
 use soroban_sdk::{Env, testutils::Ledger as _};
+use std::format;
 
-use super::{make_token, setup_env};
+use super::test::{make_token, setup_env};
 use crate::{VestingContract, VestingContractClient, vested_amount};
 use soroban_sdk::Address;
 use soroban_sdk::testutils::Address as _;
@@ -112,11 +113,12 @@ proptest! {
     #[test]
     fn prop_revoke_before_cliff_returns_all(amount in 1i128..=1_000_000i128) {
         let env = setup_env();
-        let (client, admin, _beneficiary, token, _cliff, _end) = prop_setup(&env, amount);
-        let returned = client.revoke();
-        assert_eq!(returned, amount);
+        let (client, admin, beneficiary, token, _cliff, _end) = prop_setup(&env, amount);
         let token_client = soroban_sdk::token::Client::new(&env, &token);
-        assert_eq!(token_client.balance(&admin), amount);
+        let admin_balance_before = token_client.balance(&admin);
+        let returned = client.revoke(&beneficiary);
+        assert_eq!(returned, amount);
+        assert_eq!(token_client.balance(&admin), admin_balance_before + amount);
     }
 
     #[test]
@@ -125,11 +127,11 @@ proptest! {
         pct in 0u32..=100u32,
     ) {
         let env = setup_env();
-        let (client, _admin, _beneficiary, _token, cliff, end) = prop_setup(&env, amount);
+        let (client, _admin, beneficiary, _token, cliff, end) = prop_setup(&env, amount);
         let ledger = cliff + (end - cliff) * pct / 100;
         env.ledger().with_mut(|l| l.sequence_number = ledger);
-        let returned = client.revoke();
-        let claimed = client.try_claim().unwrap_or(Ok(0)).unwrap_or(0);
+        let returned = client.revoke(&beneficiary);
+        let claimed = client.try_claim(&beneficiary).unwrap_or(Ok(0)).unwrap_or(0);
         assert_eq!(returned + claimed, amount);
     }
 
@@ -140,8 +142,8 @@ proptest! {
         t2_pct in 0u32..=100u32,
     ) {
         let env = setup_env();
-        let (client, ..) = prop_setup(&env, amount);
-        let info = client.get_info().unwrap();
+        let (client, _admin, beneficiary, ..) = prop_setup(&env, amount);
+        let info = client.get_info(&beneficiary).unwrap();
         let cliff = info.cliff_ledger;
         let end = info.end_ledger;
 
@@ -149,9 +151,9 @@ proptest! {
         let l2 = cliff + (end - cliff) * t2_pct / 100;
 
         env.ledger().with_mut(|l| l.sequence_number = l1);
-        let c1 = client.claimable();
+        let c1 = client.claimable(&beneficiary);
         env.ledger().with_mut(|l| l.sequence_number = l2);
-        let c2 = client.claimable();
+        let c2 = client.claimable(&beneficiary);
 
         if l2 >= l1 {
             assert!(c2 >= c1);

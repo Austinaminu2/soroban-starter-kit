@@ -328,3 +328,6 @@ mod contract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod prop_test;

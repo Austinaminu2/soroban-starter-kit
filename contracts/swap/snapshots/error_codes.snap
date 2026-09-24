@@ -1,0 +1,8 @@
+SwapError::NotAuthorized = 1
+SwapError::SwapNotFound = 2
+SwapError::InvalidState = 3
+SwapError::DeadlineExpired = 4
+SwapError::InvalidAmount = 5
+SwapError::InvalidDeadline = 6
+SwapError::AlreadyCompleted = 7
+SwapError::AlreadyCancelled = 8

@@ -12,6 +12,9 @@ soroban-token-template = { path = "../contracts/token" }
 soroban-escrow-template = { path = "../contracts/escrow" }
 soroban-swap-template = { path = "../contracts/swap" }
 soroban-airdrop-template = { path = "../contracts/airdrop" }
+soroban-lottery-template = { path = "../contracts/lottery" }
+soroban-oracle-template = { path = "../contracts/oracle" }
+soroban-marketplace-template = { path = "../contracts/marketplace" }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -35,10 +38,38 @@ doc = false
 [[bin]]
 name = "swap_state_machine"
 path = "fuzz_targets/swap_state_machine.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "airdrop_merkle_proof"
 path = "fuzz_targets/airdrop_merkle_proof.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "lottery_draw"
+path = "fuzz_targets/lottery_draw.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "oracle_median"
+path = "fuzz_targets/oracle_median.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "escrow_state_machine"
+path = "fuzz_targets/escrow_state_machine.rs"
+test = false
+doc = false
+
 [lints]
 workspace = true
+
+[[bin]]
+name = "marketplace_state_machine"
+path = "fuzz_targets/marketplace_state_machine.rs"
+test = false
+doc = false

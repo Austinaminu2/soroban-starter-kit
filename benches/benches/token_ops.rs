@@ -14,7 +14,7 @@ use soroban_sdk::{Address, Env, String, testutils::Address as _};
 
 use soroban_token_template::{TokenContract, TokenContractClient};
 
-fn deploy_token(env: &Env, admin: &Address) -> TokenContractClient<'_> {
+fn deploy_token<'a>(env: &'a Env, admin: &Address) -> TokenContractClient<'a> {
     let addr = env.register_contract(None, TokenContract);
     let client = TokenContractClient::new(env, &addr);
     client.initialize(
@@ -22,6 +22,7 @@ fn deploy_token(env: &Env, admin: &Address) -> TokenContractClient<'_> {
         &String::from_str(env, "Bench Token"),
         &String::from_str(env, "BT"),
         &18u32,
+        &None,
     );
     client
 }

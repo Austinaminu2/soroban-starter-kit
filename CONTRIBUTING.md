@@ -44,6 +44,19 @@ commit.
 
 ## CI checks
 
+### cargo-geiger (unsafe-code audit)
+
+The `unsafe-audit` CI job scans every crate in the workspace with `cargo-geiger`. First-party contract code is expected to contain no unsafe blocks; dependency findings are retained in the CI artifact for visibility.
+
+Install and run the same check locally:
+
+```bash
+cargo install cargo-geiger --locked
+cargo geiger --workspace --all-features --output-format GitHubMarkdown
+```
+
+Review the report before introducing unsafe code. If an unsafe dependency is unavoidable, document why it is required and keep the usage isolated and reviewed.
+
 ### cargo-machete (unused dependencies)
 
 The `machete` CI job runs `cargo machete --workspace` to detect unused entries in `Cargo.toml`.
@@ -71,7 +84,7 @@ cargo +nightly udeps --workspace --all-targets
 
 ### cargo-semver-checks (breaking API changes)
 
-The `semver` CI job runs `cargo semver-checks` on every PR to detect breaking public API changes in `soroban-token-template` and `soroban-escrow-template`.
+The `semver-check` CI job runs `cargo semver-checks` on every PR, once per contract crate (matrix build, discovered dynamically the same way the `test` and `datakey-discriminants` jobs are), to detect breaking public API changes across all contracts. Each check diffs against the contract's state on `origin/main`; a contract with no history on `origin/main` yet (e.g. newly added in the same PR) is skipped as a first-time check instead of failing CI setup.
 
 **Semver policy:** This repository follows [Semantic Versioning](https://semver.org/). Any change that removes, renames, or changes the signature of a public contract entry point, error type, or event is a **breaking change** and requires a major version bump. Adding new public items is backwards-compatible and requires only a minor bump. Bug fixes with no API change require a patch bump.
 
@@ -79,8 +92,8 @@ Install locally:
 
 ```bash
 cargo install cargo-semver-checks --locked
-cargo semver-checks -p soroban-token-template
-cargo semver-checks -p soroban-escrow-template
+cargo semver-checks --manifest-path contracts/token/Cargo.toml --baseline-rev origin/main
+# repeat with the path to whichever contract you changed
 ```
 
 ### Cargo.lock sync check
@@ -416,6 +429,88 @@ The `discriminant_tests` module in each `storage.rs` contains an exhaustive `mat
 
 ---
 
+## TTL Helper Naming Convention
+
+Every contract has to bump the TTL (time-to-live) of the storage entries it
+just wrote — instance storage on every entry point, plus individual
+persistent entries where a contract has per-entity records (an escrow, a
+listing, an offer, a token). The **name** of the helper that does this must
+say which SDK call it wraps, per the reasoning in #690 ("Rename
+`EscrowContract` internal `bump_instance` to `extend_ttl` for clarity — match
+the SDK method name it wraps"):
+
+- Wrapping `env.storage().instance().extend_ttl(...)` → name it
+  **`extend_ttl_instance`**.
+- Wrapping `env.storage().persistent().extend_ttl(key, ...)` for an arbitrary
+  key → name it **`extend_ttl_persistent`**.
+- Wrapping it for one specific kind of persistent entity → name it
+  **`extend_ttl_<entity>`** (e.g. `extend_ttl_listing`, `extend_ttl_token`).
+
+`contracts/common` exports `extend_ttl_instance` / `extend_ttl_persistent`
+directly — a contract with no entity-specific TTL logic should import and
+call those rather than writing its own wrapper (`ballot`, `bonding-curve`,
+and `wrapped-token` do this already). Only write a local wrapper when a
+contract needs a fixed threshold/bump-amount baked in, or an entity-specific
+key.
+
+Do **not** name these helpers `bump_*` (`bump_instance`, `bump_listing`,
+`bump_offer`, …) — `bump` doesn't say *what* is being extended or *how*, and
+it was the exact ambiguity #690 called out. An audit of the contracts added
+after the original seven found `bump_*`-style helpers in `airdrop`,
+`auction`, `crowdfund`, `dao`, `lottery`, `marketplace`, `nft`, `oracle`, and
+`swap`; all were renamed to the `extend_ttl_*` convention above as part of
+that audit.
+
+---
+
+## Error Handling: `Result<T, Error>` vs. Panic
+
+Every fallible **public contract entry point** (a `pub fn` in a
+`#[contractimpl] impl SomeContract` block) must return `Result<T, YourError>`
+rather than panicking, so that callers can use the SDK-generated `try_*`
+client method to inspect the failure instead of the call aborting the whole
+transaction unconditionally. This is the pattern all 20 contracts already
+follow for their public API.
+
+Panics (`.unwrap()`, `.expect(...)`, `panic!(...)`) are still allowed **at
+internal call sites**, but only when both of these hold:
+
+1. **The value is provably present.** The panic can only be reached after a
+   preceding check already ruled out the failure case (e.g. an index derived
+   from `x % len` is unwrapped right after `len` was confirmed non-zero, or a
+   `Vec` is indexed right after its non-emptiness was validated).
+2. **It carries a safety comment.** Annotate the call with
+   `#[allow(clippy::unwrap_used)]` (or `expect_used` / `panic`, matching
+   whichever lint fires) and a one-line comment explaining *why* it can't
+   fail. `auction`, `lottery`, and `escrow::lifecycle` follow this pattern
+   consistently — see e.g. `contracts/lottery/src/lib.rs`'s
+   `#[allow(clippy::unwrap_used)] // winner_idx is derived from modulo of
+   len, always in bounds`.
+
+This isn't just a style rule: the workspace lints (`unwrap_used`,
+`expect_used`, and `panic` are `warn` in the root `Cargo.toml`, and the
+`clippy` CI job runs with `-D warnings`) turn an un-annotated panic into a CI
+failure. An unwrap without the `#[allow(...)]` comment either shouldn't be
+there, or is missing its justification.
+
+**Audit result (#889):** all 20 contracts were checked for public entry
+points that panic instead of returning `Result`, and for internal
+unwrap/expect/panic sites lacking the annotation above. Test code, and the
+`stellar contract build`/`deploy` calls in each `src/bin/deploy.rs`, are out
+of scope (a deploy script's job *is* to abort on failure). The one real
+outlier was `swap`: several read paths (`set_treasury`, `set_fee_bps`,
+`set_admin`, `get_admin`, `get_treasury`, `get_fee_bps`, `accept_swap`)
+called `.unwrap()` on an instance-storage read that was only reachable after
+a separate `has(&DataKey::Initialized)` check — safe in practice, but
+undocumented, redundant (two storage reads where one suffices), and
+inconsistent with the rest of the file, which already returns
+`SwapError::NotInitialized` for the identical condition. These were rewritten
+to `.ok_or(SwapError::NotInitialized)?`, so the same failure now surfaces as
+a typed error instead of a panic, and the redundant `has()` check was
+removed. No other contract had an unflagged panic in its public API surface.
+
+---
+
 ## Adding a New Contract Template
 
 For the full step-by-step guide, see [docs/adding-a-contract.md](docs/adding-a-contract.md).
@@ -502,6 +597,97 @@ Use one of these categories for each entry:
 
 ---
 
+## Release Automation & Versioning
+
+This project uses **changesets** to automate version bumping, changelog generation, and releases. Changesets provide a structured way to document and release changes across all contract crates.
+
+### What is a Changeset?
+
+A changeset is a markdown file in the `.changeset/` directory that describes what changed and how significantly. Each changeset specifies:
+- Which packages are affected
+- The semantic version bump (major, minor, or patch)
+- A description for the changelog
+
+### Adding a Changeset
+
+When your PR includes changes to one or more contracts or the workspace, create a changeset:
+
+```bash
+# Interactive wizard to create a changeset
+npm install -g @changesets/cli    # if not already installed
+changeset add
+
+# Or manually: copy and edit an existing changeset file
+cp .changeset/template.md .changeset/your-slug-12345.md
+```
+
+The wizard will:
+1. Ask which packages changed (select all affected contracts)
+2. Prompt for the version bump type:
+   - **patch**: Bug fixes with no API changes (e.g., 1.0.0 → 1.0.1)
+   - **minor**: New backwards-compatible features (e.g., 1.0.0 → 1.1.0)
+   - **major**: Breaking changes or API modifications (e.g., 1.0.0 → 2.0.0)
+3. Request a summary of changes (appears in CHANGELOG.md)
+
+### Changeset Format
+
+Changesets are markdown files with YAML frontmatter:
+
+```markdown
+---
+"soroban-token-template": patch
+"soroban-escrow-template": minor
+---
+
+Fixed critical token transfer bug that could lose user funds.
+
+Added new `emergency_pause()` entry point for security responses.
+```
+
+Each line in the frontmatter maps a package name to its version bump. The body is the changelog summary (keep it concise).
+
+### Commit Your Changeset
+
+Commit the changeset file(s) as part of your PR:
+
+```bash
+git add .changeset/your-slug-12345.md
+git commit -m "chore: document changes for release"
+```
+
+**One changeset per PR, even if multiple packages are affected.**
+
+### Release Workflow
+
+1. **PR merged to main**: GitHub Actions detects changesets and creates a release PR
+2. **Release PR**: Automatically bumps versions and generates CHANGELOG entries
+3. **Merge release PR**: CI tags the release and publishes to GitHub (and crates.io if configured)
+
+The release workflow is fully automated via `.github/workflows/release.yml`.
+
+### When NOT to Add a Changeset
+
+- Documentation-only changes (README, docs/, comments)
+- CI/CD improvements (not affecting shipped code)
+- Test-only changes
+- Internal refactoring with no behavior change
+
+For these, skip the changeset—just update the PR title and description.
+
+### Semver Policy
+
+Follow [Semantic Versioning](https://semver.org/):
+
+| Change Type | Bump | Examples |
+|-------------|------|----------|
+| Bug fixes, optimizations | **patch** | Fixed overflow in token math, optimized gas usage |
+| New features, entry points | **minor** | Added `freeze_account()`, new utility function |
+| Breaking changes, removed features | **major** | Renamed `burn()` to `burn_tokens()`, removed deprecated API |
+
+**On-chain contracts are especially sensitive to breaking changes** — a major version bump signals that existing deployments may not be compatible.
+
+---
+
 ## PR Checklist
 
 Before opening a pull request, confirm all of the following:
@@ -511,7 +697,7 @@ Before opening a pull request, confirm all of the following:
 - [ ] `cargo test --workspace` passes
 - [ ] New functionality is covered by tests (unit + property-based where applicable)
 - [ ] Public API changes are documented with doc comments
-- [ ] `CHANGELOG.md` has an entry under `[Unreleased]`
+- [ ] A changeset is created if the PR affects contract code or workspace dependencies (see [Release Automation](#release-automation--versioning))
 - [ ] `README.md` is updated if the change affects usage or the template list
 - [ ] The PR title is concise (≤ 70 characters) and follows the format `type: short description` (e.g. `feat: add vesting contract template`)
 - [ ] The PR description references the issue it closes (`Closes #NNN`)
@@ -559,12 +745,63 @@ The `main` branch is protected with the following rules:
 | Rule | Enforcement |
 |------|------------|
 | Require PR reviews | Minimum **1 approval** required before merge |
-| Require status checks | All GitHub Actions workflows must pass: `ci`, `lint-pr-title`, `bench`, `pr-labeler` |
+| Require status checks | All GitHub Actions workflows must pass: `ci`, `lint-pr-title`, `bench`, `pr-labeler`, `changesets` |
 | Require branches up to date | Branch must be up-to-date with `main` before merge |
 | Restrict who can push | Only authorized maintainers can merge PRs |
 | Allow force pushes | Disabled — prevents accidental history rewriting |
 | Allow deletions | Disabled — protects branch from accidents |
 | Require code owner review | Enabled — CODEOWNERS file is enforced |
+
+### Why `main` can end up with code that doesn't compile
+
+This table describes the *intended* configuration. Twice now (#769–#771, and
+again in the state this document was written against) `main` has ended up
+with contracts that fail `cargo build --workspace`, despite this policy. Both
+times trace back to the same root cause, not to the required-status-checks
+list above being wrong:
+
+1. **`.github/workflows/ci.yml` was itself invalid**, so GitHub never created
+   any check runs for it at all. A job cannot declare its own `schedule:` —
+   that key only exists on the workflow-level `on:` trigger — so the file
+   failed schema validation before a single job ran. A workflow that fails to
+   parse produces **zero check runs** (confirmed via the Actions API: recent
+   runs on `main` report `conclusion: failure` with `0` jobs, and
+   `GET /commits/{sha}/check-runs` for `main`'s tip lists no `ci` check at
+   all — only unrelated Dependabot/benchmark checks). Required-status-check
+   branch protection can only block a merge on a check that *exists*; a
+   workflow-file parse error produces none, so nothing was there to require.
+2. **Even when the workflow file parses, no per-PR job actually ran
+   `cargo build --workspace`.** The `audit` job builds each contract's WASM
+   individually via `stellar contract build --manifest-path <dir>/Cargo.toml`
+   in a loop, which does not catch errors that only appear when the whole
+   workspace is built together. The one job that did run
+   `cargo build --workspace --all-targets` was `nightly`, gated to the
+   `schedule` event only (once a week) — never on `push` or `pull_request` —
+   so it could not block a merge even in principle.
+
+**The fix (this PR):**
+
+- `ci.yml`'s schema errors are corrected (the invalid job-level `schedule:`,
+  and duplicated/malformed steps left over from earlier merge conflicts in
+  `security-audit` and `smoke-test`) so the workflow parses and posts check
+  runs again.
+- A new `build` job runs `cargo build --workspace --all-targets` on every
+  `push` and `pull_request`, independent of `nightly`.
+- The workspace itself was repaired to actually pass that check (several
+  contracts had accumulated compile errors — duplicated/orphaned code from
+  bad merges, stale pre-#690-style API calls, and other drift — that had been
+  landing on `main` invisibly for the same reason).
+
+**What a repo admin still needs to do:** branch-protection rules are a GitHub
+repository setting, not something a PR can change. Outside contributors
+cannot see or edit them (`repo.permissions.admin` is required). Once this PR
+merges, a maintainer should open **Settings → Branches → main → Edit
+protection rule** and confirm **`Build (workspace, all targets)`** (the new
+`build` job) is checked under "Require status checks to pass before merging",
+alongside the checks already listed below. This is the concrete instance of
+the "add/verify a required status check on `main`" step — the code fix alone
+restores the check; a maintainer flipping this setting is what makes it
+actually block a bad merge.
 
 ### Status Checks Required for Merge
 

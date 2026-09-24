@@ -21,7 +21,7 @@ variable "network" {
 }
 
 variable "network_passphrase" {
-  description = "Stellar network passphrase"
+  description = "Stellar network passphrase (only used for local networks; mainnet/testnet passphrases are derived from network variable)"
   type        = string
   sensitive   = true
   default     = "Test SDF Network ; September 2015"

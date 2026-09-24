@@ -1,6 +1,7 @@
 // `#[contracterror]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
+use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
 #[contracterror]
@@ -21,9 +22,30 @@ pub enum LotteryError {
     NothingToRefund = 13,
     InvalidWinnerConfig = 14,
     InsufficientParticipants = 15,
-    InvalidTicketCap = 11,
-    TicketCapExceeded = 12,
+    InvalidTicketCap = 16,
+    TicketCapExceeded = 17,
 }
+
+impl_display_error!(
+    LotteryError,
+    AlreadyInitialized      => "already initialized",
+    NotInitialized          => "not initialized",
+    Unauthorized            => "not authorized",
+    LotteryClosed           => "lottery closed",
+    DrawAlreadyDone         => "draw already done",
+    DrawNotDone             => "draw not done",
+    InvalidTicketPrice      => "invalid ticket price",
+    CommitAlreadySubmitted  => "commit already submitted",
+    RevealMismatch          => "reveal mismatch",
+    NoTickets               => "no tickets",
+    InvalidRevealDeadline   => "invalid reveal deadline",
+    RefundNotAvailable      => "refund not available",
+    NothingToRefund         => "nothing to refund",
+    InvalidWinnerConfig     => "invalid winner config",
+    InsufficientParticipants => "insufficient participants",
+    InvalidTicketCap        => "invalid ticket cap",
+    TicketCapExceeded       => "ticket cap exceeded",
+);
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,10 @@
+SubscriptionError::AlreadyInitialized = 1
+SubscriptionError::NotInitialized = 2
+SubscriptionError::NotAuthorized = 3
+SubscriptionError::InvalidAmount = 4
+SubscriptionError::InvalidInterval = 5
+SubscriptionError::AlreadySubscribed = 6
+SubscriptionError::NotSubscribed = 7
+SubscriptionError::SubscriptionInactive = 8
+SubscriptionError::IntervalNotElapsed = 9
+SubscriptionError::InsufficientAllowance = 10

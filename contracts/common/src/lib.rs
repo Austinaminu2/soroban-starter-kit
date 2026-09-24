@@ -3,9 +3,10 @@
 //! Shared helpers for the Soroban contract templates.
 //!
 //! Provides admin-storage helpers, TTL/lifetime constants, deadline validation,
-//! and the [`AdminKey`] storage key reused across the contract crates.
+//! basis-point fee calculation, commit-reveal hashing, and the [`AdminKey`]
+//! storage key reused across the contract crates.
 
-use soroban_sdk::{Address, Env, contracttype};
+use soroban_sdk::{Address, Bytes, BytesN, Env, contracttype, crypto::Hash};
 
 /// Minimum number of ledgers the deadline must be ahead of the current ledger
 /// when initializing an escrow. Enforced by the contract; tests must respect
@@ -242,6 +243,226 @@ where
     }
 }
 
+// ─── Basis-point fee calculation (#884) ───────────────────────────────────────
+
+/// Basis-point denominator (10 000 = 100 %).
+pub const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Compute a fee as `amount * bps / 10_000` with overflow-safe checked
+/// arithmetic.
+///
+/// Returns `Some(fee)` when the multiplication does not overflow, or `None` if
+/// `amount * bps` would exceed `i128::MAX`.  Division truncates toward zero,
+/// matching the existing convention across the codebase.
+///
+/// # Examples
+///
+/// ```ignore
+/// use soroban_common::apply_bps_fee;
+///
+/// // 5 % fee on 1_000_000
+/// assert_eq!(apply_bps_fee(1_000_000, 500), Some(50_000));
+/// // 0 bps → zero fee
+/// assert_eq!(apply_bps_fee(1_000_000, 0), Some(0));
+/// // 10 000 bps → full amount
+/// assert_eq!(apply_bps_fee(1_000_000, 10_000), Some(1_000_000));
+/// // Overflow → None
+/// assert_eq!(apply_bps_fee(i128::MAX, 10_000), None);
+/// ```
+#[must_use]
+pub fn apply_bps_fee(amount: i128, bps: u32) -> Option<i128> {
+    amount.checked_mul(bps as i128)?.checked_div(BPS_DENOMINATOR)
+}
+
+// ─── Commit-reveal hashing helpers (#887) ────────────────────────────────────
+
+/// Build the SHA-256 preimage for a commit-reveal scheme.
+///
+/// Concatenates `secret` and `salt` into a single `Bytes` buffer suitable for
+/// hashing.  Both inputs are 32-byte values (`BytesN<32>`).
+///
+/// The returned `Hash<32>` is `SHA-256(secret || salt)`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use soroban_common::commit_hash;
+/// use soroban_sdk::{Env, BytesN};
+///
+/// let env = Env::default();
+/// let secret = BytesN::from_array(&env, &[1u8; 32]);
+/// let salt = BytesN::from_array(&env, &[2u8; 32]);
+/// let hash = commit_hash(&env, &secret, &salt);
+/// ```
+#[must_use]
+pub fn commit_hash(env: &Env, secret: &BytesN<32>, salt: &BytesN<32>) -> Hash<32> {
+    let mut preimage = Bytes::new(env);
+    preimage.extend_from_array(&secret.to_array());
+    preimage.extend_from_array(&salt.to_array());
+    env.crypto().sha256(&preimage)
+}
+
+/// Build the entropy input for winner selection in a commit-reveal lottery.
+///
+/// Concatenates `secret`, `salt`, and an arbitrary-length `extra` byte slice
+/// into a single buffer and returns its SHA-256 hash.
+///
+/// # Examples
+///
+/// ```ignore
+/// use soroban_common::entropy_hash;
+/// use soroban_sdk::{Env, BytesN};
+///
+/// let env = Env::default();
+/// let secret = BytesN::from_array(&env, &[1u8; 32]);
+/// let salt = BytesN::from_array(&env, &[2u8; 32]);
+/// let ledger_bytes = 42u32.to_be_bytes();
+/// let hash = entropy_hash(&env, &secret, &salt, &ledger_bytes);
+/// ```
+#[must_use]
+pub fn entropy_hash(env: &Env, secret: &BytesN<32>, salt: &BytesN<32>, extra: &[u8]) -> Hash<32> {
+    let mut input = Bytes::new(env);
+    input.extend_from_array(&secret.to_array());
+    input.extend_from_array(&salt.to_array());
+    input.append(&Bytes::from_slice(env, extra));
+    env.crypto().sha256(&input)
+}
+
+/// Derive a deterministic pool index from a 32-byte SHA-256 hash.
+///
+/// Takes the **last 8 bytes** of `hash` as a big-endian `u64` and reduces it
+/// modulo `pool_len`, returning the result as a `u32` index.
+///
+/// `pool_len` must be greater than zero; the caller is responsible for
+/// validating that constraint.
+///
+/// # Panics
+///
+/// Panics if `pool_len == 0`.
+///
+/// # Examples
+///
+/// ```ignore
+/// use soroban_common::entropy_index;
+/// use soroban_sdk::{Env, BytesN};
+///
+/// let env = Env::default();
+/// let secret = BytesN::from_array(&env, &[1u8; 32]);
+/// let salt = BytesN::from_array(&env, &[2u8; 32]);
+/// let hash = soroban_common::commit_hash(&env, &secret, &salt);
+/// let idx = entropy_index(&hash, 10); // 0 <= idx < 10
+/// ```
+#[allow(clippy::indexing_slicing)] // sha256 output is always 32 bytes
+#[must_use]
+pub fn entropy_index(hash: &Hash<32>, pool_len: u32) -> u32 {
+    let bytes = hash.to_array();
+    let idx_raw = u64::from_be_bytes([
+        bytes[24], bytes[25], bytes[26], bytes[27], bytes[28], bytes[29], bytes[30], bytes[31],
+    ]);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::as_conversions,
+        clippy::arithmetic_side_effects,
+        clippy::integer_division
+    )]
+    let idx = (idx_raw % pool_len as u64) as u32;
+    idx
+}
+
+// ─── Per-address rate limiting (#824) ────────────────────────────────────────
+
+/// Check whether `address` has exceeded `max_calls` within a rolling ledger
+/// `window` and, if not, record this call.
+///
+/// ## Storage
+///
+/// One **persistent** key per `(namespace, address)` pair is written.  The key
+/// is a two-element tuple `(namespace, address)` so that callers can isolate
+/// multiple independent rate-limit rules on the same address by choosing
+/// different `namespace` values.
+///
+/// ## Window semantics
+///
+/// The window is **sliding from the first call**: on the first call for an
+/// address the current ledger is recorded as `window_start`.  Subsequent calls
+/// within `[window_start, window_start + window)` increment the counter.  Once
+/// the ledger advances past `window_start + window` the counter resets and a
+/// new window begins.
+///
+/// ## Parameters
+///
+/// - `env`       — the contract [`Env`].
+/// - `namespace` — a `u32` discriminant acting as a namespace for the stored
+///                 key.  Use different values to enforce separate rate-limit
+///                 rules for the same address (e.g. `1` for deposits, `2` for
+///                 withdrawals).
+/// - `address`   — the address to throttle.
+/// - `window`    — size of the sliding window in ledgers.  Must be ≥ 1.
+/// - `max_calls` — maximum number of allowed calls within a single window.
+///
+/// ## Returns
+///
+/// `true`  — the call is **allowed** (counter has been incremented).  
+/// `false` — the call is **denied** (limit already reached in this window).
+///
+/// ## Example
+///
+/// ```ignore
+/// use soroban_common::check_and_record;
+/// use soroban_sdk::{Address, Env};
+///
+/// // Allow at most 3 calls per 100 ledgers for a given address.
+/// pub fn sensitive_action(env: Env, caller: Address) -> Result<(), MyError> {
+///     if !check_and_record(&env, 1u32, &caller, 100, 3) {
+///         return Err(MyError::RateLimitExceeded);
+///     }
+///     // ... action logic ...
+///     Ok(())
+/// }
+/// ```
+pub fn check_and_record(
+    env: &Env,
+    namespace: u32,
+    address: &Address,
+    window: u32,
+    max_calls: u32,
+) -> bool {
+    // Composite storage key: (namespace, address).
+    let key = (namespace, address.clone());
+
+    let current_ledger = env.ledger().sequence();
+
+    // Load existing entry (window_start, call_count) from persistent storage.
+    let entry: Option<(u32, u32)> = env.storage().persistent().get(&key);
+
+    let (window_start, call_count) = match entry {
+        Some((ws, cc)) => {
+            let window_end = ws.saturating_add(window);
+            if current_ledger >= window_end {
+                // Window has expired — start a fresh window.
+                (current_ledger, 0u32)
+            } else {
+                (ws, cc)
+            }
+        }
+        None => (current_ledger, 0u32),
+    };
+
+    if call_count >= max_calls {
+        return false;
+    }
+
+    let new_count = call_count.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&key, &(window_start, new_count));
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+
+    true
+}
+
 // ─── Cursor-based pagination ──────────────────────────────────────────────────
 
 /// A single page of results produced by [`paginate`].
@@ -369,4 +590,154 @@ where
     }
 
     Page { items, next_cursor }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── apply_bps_fee tests ──────────────────────────────────────────────
+
+    #[test]
+    fn bps_fee_zero_bps() {
+        assert_eq!(apply_bps_fee(1_000_000, 0), Some(0));
+    }
+
+    #[test]
+    fn bps_fee_full_bps() {
+        assert_eq!(apply_bps_fee(1_000_000, 10_000), Some(1_000_000));
+    }
+
+    #[test]
+    fn bps_fee_half() {
+        assert_eq!(apply_bps_fee(1_000_000, 5_000), Some(500_000));
+    }
+
+    #[test]
+    fn bps_fee_typical() {
+        // 5 % fee
+        assert_eq!(apply_bps_fee(1_000_000, 500), Some(50_000));
+    }
+
+    #[test]
+    fn bps_fee_truncation() {
+        // 1 bp on 1 unit → 0 (integer truncation)
+        assert_eq!(apply_bps_fee(1, 1), Some(0));
+    }
+
+    #[test]
+    fn bps_fee_overflow() {
+        assert_eq!(apply_bps_fee(i128::MAX, 10_000), None);
+    }
+
+    #[test]
+    fn bps_fee_large_amount() {
+        // 1_000_000_000_000 * 250 / 10_000 = 25_000_000_000
+        assert_eq!(apply_bps_fee(1_000_000_000_000, 250), Some(25_000_000_000));
+    }
+
+    #[test]
+    fn bps_fee_zero_amount() {
+        assert_eq!(apply_bps_fee(0, 500), Some(0));
+    }
+}
+
+// ─── Shared instance bump helper ────────────────────────────────────────────
+
+/// Extend instance storage TTL using the default threshold and bump amount.
+///
+/// This is the standard bump that most contracts call after every state-changing
+/// entry point.  Delegates to [`extend_ttl_instance`] with
+/// [`LEDGER_LIFETIME_THRESHOLD`] and [`LEDGER_BUMP_AMOUNT`].
+///
+/// # Examples
+///
+/// ```ignore
+/// use soroban_common::bump_instance;
+/// use soroban_sdk::Env;
+///
+/// let env = Env::default();
+/// bump_instance(&env);
+/// ```
+pub fn bump_instance(env: &Env) {
+    extend_ttl_instance(env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+}
+
+// ─── Generic get_required helper ────────────────────────────────────────────
+
+/// Reads a value from instance storage, returning an error if the key is missing.
+///
+/// This is the generic version that callers can use with any error type that
+/// implements `From<()>`.  For contracts that define a `NotInitialized` variant,
+/// the pattern is:
+///
+/// ```ignore
+/// fn get_required<T>(env: &Env, key: &DataKey) -> Result<T, MyError> {
+///     soroban_common::get_required(env, key)
+/// }
+/// ```
+///
+/// # Panics
+///
+/// Panics if the key is not present in instance storage.
+///
+/// # Examples
+///
+/// ```ignore
+/// use soroban_sdk::{contracttype, Env};
+/// use soroban_common::get_required;
+///
+/// #[contracttype]
+/// #[derive(Clone)]
+/// enum DataKey {
+///     Admin,
+/// }
+///
+/// let env = Env::default();
+/// // Assuming admin has been set:
+/// // let admin: Address = get_required(&env, &DataKey::Admin)?;
+/// ```
+pub fn get_required<K, V, E>(env: &Env, key: &K) -> Result<V, E>
+where
+    K: soroban_sdk::TryIntoVal<Env, soroban_sdk::Val> + soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+    V: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
+    E: From<()>,
+{
+    env.storage()
+        .instance()
+        .get(key)
+        .ok_or(E::from(()))
+}
+
+// ─── Token storage key ──────────────────────────────────────────────────────
+
+/// Reusable storage key variants shared across contracts.
+///
+/// Many contracts store an `Admin` and/or a `Token` address in instance
+/// storage.  Rather than each crate re-declaring the same enum, they can
+/// import the variants from here.
+///
+/// # Usage
+///
+/// ```ignore
+/// use soroban_common::{CommonKey, get_admin};
+///
+/// let admin = get_admin(&env);
+/// env.storage().instance().set(&CommonKey::Token, &token_address);
+/// ```
+pub use common_key::CommonKey;
+
+mod common_key {
+    #![allow(missing_docs)]
+    use super::contracttype;
+
+    /// Shared storage key variants.
+    #[contracttype]
+    #[derive(Clone)]
+    pub enum CommonKey {
+        /// Instance-storage slot holding the administrator [`Address`].
+        Admin,
+        /// Instance-storage slot holding the payment token [`Address`].
+        Token,
+    }
 }

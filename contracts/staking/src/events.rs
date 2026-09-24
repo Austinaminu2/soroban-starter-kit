@@ -41,3 +41,30 @@ pub fn compounded(env: &Env, staker: &Address, reward: i128, new_stake: i128) {
         (reward, new_stake),
     );
 }
+
+/// Emitted when admin slashes a staker's balance.
+///
+/// `amount` is the slashed token amount; `destination` is where the tokens went.
+pub fn slashed(env: &Env, admin: &Address, staker: &Address, amount: i128, destination: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "slashed"), admin.clone(), staker.clone()),
+        (amount, destination.clone()),
+    );
+}
+
+/// Emitted when a staker queues an unbond request.
+///
+/// `amount` is the amount queued; `available_at` is the ledger sequence after which
+/// `withdraw` becomes valid.
+pub fn unbond_requested(env: &Env, staker: &Address, amount: i128, available_at: u32) {
+    env.events().publish(
+        (Symbol::new(env, "unbond_requested"), staker.clone()),
+        (amount, available_at),
+    );
+}
+
+/// Emitted when a staker successfully withdraws their unbonded tokens.
+pub fn withdrawn(env: &Env, staker: &Address, amount: i128) {
+    env.events()
+        .publish((Symbol::new(env, "withdrawn"), staker.clone()), amount);
+}

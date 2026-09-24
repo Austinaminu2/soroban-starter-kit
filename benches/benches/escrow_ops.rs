@@ -54,6 +54,7 @@ fn setup(
         &String::from_str(env, "Bench Token"),
         &String::from_str(env, "BT"),
         &18u32,
+        &None,
     );
     token.mint(&buyer, &amount);
 

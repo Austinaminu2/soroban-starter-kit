@@ -71,6 +71,12 @@ pub fn approve_with_signature(
     expiry_ledger: u32,
     signature: BytesN<64>,
 ) -> Result<(), TokenError> {
+    #[cfg(feature = "pausable")]
+    {
+        use crate::require_not_paused;
+        require_not_paused(&env)?;
+    }
+
     if env.ledger().sequence() > expiry_ledger {
         return Err(TokenError::PermitExpired);
     }

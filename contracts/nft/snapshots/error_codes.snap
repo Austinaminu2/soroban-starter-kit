@@ -1,0 +1,11 @@
+NftError::NotAuthorized = 1
+NftError::AlreadyInitialized = 2
+NftError::NotInitialized = 3
+NftError::TokenNotFound = 4
+NftError::TokenAlreadyMinted = 5
+NftError::NotOwner = 6
+NftError::NotApproved = 7
+NftError::SupplyCapReached = 8
+NftError::InvalidTokenId = 9
+NftError::InvalidRoyalty = 10
+NftError::RoyaltyRecipientMissing = 11

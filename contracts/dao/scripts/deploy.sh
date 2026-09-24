@@ -38,6 +38,7 @@ fi
 # TOKEN_ADDRESS="C..."         # governance token contract
 # VOTING_PERIOD=17280          # ~24h at 5s/ledger
 # QUORUM=1000000000            # minimum total votes (token units)
+# QUORUM_BPS=0                 # % of total supply required (0 = disabled, 5000 = 50%)
 
 # stellar contract invoke \
 #     --id $CONTRACT_ID \
@@ -46,7 +47,8 @@ fi
 #     --admin $ADMIN_ADDRESS \
 #     --token $TOKEN_ADDRESS \
 #     --voting_period $VOTING_PERIOD \
-#     --quorum $QUORUM
+#     --quorum $QUORUM \
+#     --quorum_bps $QUORUM_BPS
 
 echo "DAO contract ready for use!"
 echo "Save this Contract ID: $CONTRACT_ID"

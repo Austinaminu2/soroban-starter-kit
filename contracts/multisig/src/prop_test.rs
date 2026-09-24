@@ -25,7 +25,7 @@ proptest! {
         let contract_address = env.register_contract(None, MultisigContract);
         let client = MultisigContractClient::new(&env, &contract_address);
 
-        let result = client.try_initialize(&signers, &threshold);
+        let result = client.try_initialize(&signers, &threshold, &None);
         if threshold <= signer_count {
             prop_assert!(result.is_ok());
             prop_assert_eq!(client.get_threshold(), Some(threshold));
@@ -44,17 +44,17 @@ proptest! {
         let bob = signers.get(1).unwrap();
         let contract_address = env.register_contract(None, MultisigContract);
         let client = MultisigContractClient::new(&env, &contract_address);
-        client.initialize(&signers, &2);
+        client.initialize(&signers, &2, &None);
 
         let new_signer = Address::generate(&env);
         let duplicate_approvals = vec![&env, alice.clone(), alice.clone()];
-        let result = client.try_add_signer(&duplicate_approvals, &new_signer, &2);
+        let result = client.try_add_signer(&duplicate_approvals, &new_signer, &1, &2);
 
         prop_assert!(result.is_err());
         prop_assert!(!client.is_signer(&new_signer));
 
         let valid_approvals = vec![&env, alice, bob];
-        let result = client.try_add_signer(&valid_approvals, &new_signer, &2);
+        let result = client.try_add_signer(&valid_approvals, &new_signer, &1, &2);
         prop_assert!(result.is_ok());
         prop_assert!(client.is_signer(&new_signer));
     }

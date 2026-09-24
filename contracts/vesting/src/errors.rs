@@ -1,28 +1,37 @@
 // `#[contracterror]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
+use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VestingError {
-    /// `initialize` was called on an already-initialized contract.
     AlreadyInitialized = 1,
-    /// An operation was attempted before the contract was initialized.
     NotInitialized = 2,
-    /// Caller is not authorized to perform this action.
     NotAuthorized = 3,
-    /// Amount is zero or negative.
     InvalidAmount = 4,
-    /// `cliff_ledger` >= `end_ledger`, or `end_ledger` <= current ledger.
     InvalidSchedule = 5,
-    /// No tokens are currently vested and unclaimed.
     NothingToClaim = 6,
-    /// The vesting schedule has already been revoked.
     AlreadyRevoked = 7,
-    /// admin_release was called after the cliff has already passed.
     CliffAlreadyPassed = 8,
+    ScheduleAlreadyExists = 9,
+    ScheduleNotFound = 10,
 }
+
+impl_display_error!(
+    VestingError,
+    AlreadyInitialized    => "already initialized",
+    NotInitialized        => "not initialized",
+    NotAuthorized         => "not authorized",
+    InvalidAmount         => "invalid amount",
+    InvalidSchedule       => "invalid schedule",
+    NothingToClaim        => "nothing to claim",
+    AlreadyRevoked        => "already revoked",
+    CliffAlreadyPassed    => "cliff already passed",
+    ScheduleAlreadyExists => "schedule already exists",
+    ScheduleNotFound      => "schedule not found",
+);
 
 #[cfg(test)]
 mod tests {
@@ -38,20 +47,24 @@ mod tests {
             "\
 VestingError::AlreadyInitialized = {}\n\
 VestingError::NotInitialized = {}\n\
-VestingError::Unauthorized = {}\n\
+VestingError::NotAuthorized = {}\n\
 VestingError::InvalidAmount = {}\n\
 VestingError::InvalidSchedule = {}\n\
 VestingError::NothingToClaim = {}\n\
 VestingError::AlreadyRevoked = {}\n\
-VestingError::CliffAlreadyPassed = {}\n",
+VestingError::CliffAlreadyPassed = {}\n\
+VestingError::ScheduleAlreadyExists = {}\n\
+VestingError::ScheduleNotFound = {}\n",
             VestingError::AlreadyInitialized as u32,
             VestingError::NotInitialized as u32,
-            VestingError::Unauthorized as u32,
+            VestingError::NotAuthorized as u32,
             VestingError::InvalidAmount as u32,
             VestingError::InvalidSchedule as u32,
             VestingError::NothingToClaim as u32,
             VestingError::AlreadyRevoked as u32,
             VestingError::CliffAlreadyPassed as u32,
+            VestingError::ScheduleAlreadyExists as u32,
+            VestingError::ScheduleNotFound as u32,
         )
     }
 
@@ -62,9 +75,4 @@ VestingError::CliffAlreadyPassed = {}\n",
             include_str!("../snapshots/error_codes.snap")
         );
     }
-}
-    /// A schedule already exists for the specified beneficiary.
-    ScheduleAlreadyExists = 9,
-    /// No schedule was found for the specified beneficiary.
-    ScheduleNotFound = 10,
 }

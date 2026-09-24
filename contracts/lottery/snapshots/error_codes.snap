@@ -1,0 +1,17 @@
+LotteryError::AlreadyInitialized = 1
+LotteryError::NotInitialized = 2
+LotteryError::Unauthorized = 3
+LotteryError::LotteryClosed = 4
+LotteryError::DrawAlreadyDone = 5
+LotteryError::DrawNotDone = 6
+LotteryError::InvalidTicketPrice = 7
+LotteryError::CommitAlreadySubmitted = 8
+LotteryError::RevealMismatch = 9
+LotteryError::NoTickets = 10
+LotteryError::InvalidRevealDeadline = 11
+LotteryError::RefundNotAvailable = 12
+LotteryError::NothingToRefund = 13
+LotteryError::InvalidWinnerConfig = 14
+LotteryError::InsufficientParticipants = 15
+LotteryError::InvalidTicketCap = 16
+LotteryError::TicketCapExceeded = 17

@@ -1,0 +1,7 @@
+OracleError::AlreadyInitialized = 1
+OracleError::NotInitialized = 2
+OracleError::Unauthorized = 3
+OracleError::StalePrice = 4
+OracleError::InvalidStalenessThreshold = 5
+OracleError::NoPublisherData = 6
+OracleError::InsufficientHistory = 7

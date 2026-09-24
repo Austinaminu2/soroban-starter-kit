@@ -9,8 +9,9 @@
 
 use super::*;
 use soroban_sdk::{
+    Address, Env, String,
     testutils::{Address as _, Ledger as _},
-    Address, Env,
+    vec,
 };
 
 // Helper: ledger sequence when tests start.
@@ -27,11 +28,17 @@ fn make_env() -> Env {
     env
 }
 
+/// Two-choice ballot (backward compat): choices = ["no", "yes"].
 fn setup(env: &Env) -> (BallotContractClient, Address) {
     let admin = Address::generate(env);
     let addr = env.register_contract(None, BallotContract);
     let client = BallotContractClient::new(env, &addr);
-    client.initialize(&admin, &VOTING_START, &VOTING_END);
+    let choices = vec![
+        env,
+        String::from_str(env, "no"),
+        String::from_str(env, "yes"),
+    ];
+    client.initialize(&admin, &VOTING_START, &VOTING_END, &choices);
     (client, admin)
 }
 
@@ -51,10 +58,11 @@ fn test_ballot_lifecycle() {
     client.register_voter(&voter2);
 
     // Advance into the voting window
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
 
-    client.vote(&voter1, &1u32);
-    client.vote(&voter2, &0u32);
+    client.vote(&voter1, &1u32); // yes
+    client.vote(&voter2, &0u32); // no
 
     assert_eq!(client.get_yes_votes(), 1);
     assert_eq!(client.get_no_votes(), 1);
@@ -76,7 +84,8 @@ fn test_double_vote_prevention() {
 
     let voter = Address::generate(&env);
     client.register_voter(&voter);
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
 
     client.vote(&voter, &1u32);
     client.vote(&voter, &1u32); // should panic AlreadyVoted (#5)
@@ -93,7 +102,8 @@ fn test_unregistered_voter_rejected() {
     let (client, _admin) = setup(&env);
 
     let unregistered = Address::generate(&env);
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
     client.vote(&unregistered, &1u32); // should panic NotRegistered (#4)
 }
 
@@ -108,8 +118,10 @@ fn test_invalid_choice_rejected() {
 
     let voter = Address::generate(&env);
     client.register_voter(&voter);
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
 
+    // Two choices (0,1): index 2 is invalid.
     let result = client.try_vote(&voter, &2u32);
     assert!(result.is_err());
 }
@@ -122,37 +134,40 @@ fn test_invalid_choice_rejected() {
 fn test_double_initialize_rejected() {
     let env = make_env();
     let (client, admin) = setup(&env);
-    let result = client.try_initialize(&admin, &VOTING_START, &VOTING_END);
+    let choices = vec![
+        &env,
+        String::from_str(&env, "no"),
+        String::from_str(&env, "yes"),
+    ];
+    let result = client.try_initialize(&admin, &VOTING_START, &VOTING_END, &choices);
     assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------
-// TTL extension — #777
-// Verify register_voter and vote extend persistent TTL (no archival regression).
+// TTL extension
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_register_voter_extends_persistent_ttl() {
     let env = make_env();
-    // Use a large voting window so we can advance the ledger significantly
-    // while staying inside the window.
     let admin = Address::generate(&env);
     let addr = env.register_contract(None, BallotContract);
     let client = BallotContractClient::new(&env, &addr);
     let big_end: u32 = 100_000;
-    client.initialize(&admin, &VOTING_START, &big_end);
+    let choices = vec![
+        &env,
+        String::from_str(&env, "no"),
+        String::from_str(&env, "yes"),
+    ];
+    client.initialize(&admin, &VOTING_START, &big_end, &choices);
 
     let voter = Address::generate(&env);
     client.register_voter(&voter);
 
-    // Advance the ledger significantly while still inside the voting window.
-    // If TTL were NOT extended the persistent entry would expire; with the fix
-    // the entry's TTL is bumped to LEDGER_BUMP_AMOUNT on registration.
-    env.ledger().with_mut(|l| l.sequence_number = VOTING_START + 10_000);
+    env.ledger()
+        .with_mut(|l| l.sequence_number = VOTING_START + 10_000);
 
-    // The voter should still be registered (TTL was extended at register time).
     let result = client.try_vote(&voter, &1u32);
-    // Should succeed (not fail with NotRegistered) — confirms TTL was extended.
     assert!(result.is_ok());
 }
 
@@ -166,13 +181,14 @@ fn test_vote_extends_persistent_ttl() {
     env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
     client.vote(&voter, &1u32);
 
-    // Advance ledger; without the TTL fix the Voter key would expire and the
-    // double-vote guard would fail to detect the previous vote.
-    env.ledger().with_mut(|l| l.sequence_number = VOTING_START + 10_000);
+    env.ledger()
+        .with_mut(|l| l.sequence_number = VOTING_START + 10_000);
 
-    // Attempt second vote — must still be rejected (AlreadyVoted).
     let result = client.try_vote(&voter, &1u32);
-    assert!(result.is_err(), "second vote should be rejected even after ledger advance");
+    assert!(
+        result.is_err(),
+        "second vote should be rejected even after ledger advance"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +210,8 @@ fn test_tally_closes_voting() {
     // After tally, voting is closed — new votes should fail
     let voter2 = Address::generate(&env);
     client.register_voter(&voter2);
-    env.ledger().with_mut(|l| l.sequence_number = VOTING_START + 1);
+    env.ledger()
+        .with_mut(|l| l.sequence_number = VOTING_START + 1);
     let result = client.try_vote(&voter2, &0u32);
     assert!(result.is_err());
 }
@@ -225,7 +242,8 @@ fn test_vote_after_window_rejected() {
     let voter = Address::generate(&env);
 
     client.register_voter(&voter);
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_END + 1);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_END + 1);
     client.vote(&voter, &1u32);
 }
 
@@ -237,7 +255,8 @@ fn test_vote_at_window_start_accepted() {
     let voter = Address::generate(&env);
 
     client.register_voter(&voter);
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
     client.vote(&voter, &1u32);
     assert_eq!(client.get_yes_votes(), 1);
 }
@@ -263,8 +282,13 @@ fn test_invalid_window_rejected() {
     let admin = Address::generate(&env);
     let addr = env.register_contract(None, BallotContract);
     let client = BallotContractClient::new(&env, &addr);
+    let choices = vec![
+        &env,
+        String::from_str(&env, "no"),
+        String::from_str(&env, "yes"),
+    ];
     // start == end → InvalidWindow
-    client.initialize(&admin, &50u32, &50u32);
+    client.initialize(&admin, &50u32, &50u32, &choices);
 }
 
 // ---------------------------------------------------------------------------
@@ -279,11 +303,10 @@ fn test_deregister_voter_before_vote() {
     let voter = Address::generate(&env);
 
     client.register_voter(&voter);
-    // Deregister should succeed (no votes cast yet)
     client.deregister_voter(&voter);
 
-    // The voter is now unknown; trying to vote should fail (NotRegistered)
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
     let result = client.try_vote(&voter, &1u32);
     assert!(result.is_err());
 }
@@ -300,11 +323,11 @@ fn test_deregister_voter_after_vote_rejected() {
     client.register_voter(&voter1);
     client.register_voter(&voter2);
 
-    // voter1 votes
-    env.ledger().with_mut(|le| le.sequence_number = VOTING_START);
+    env.ledger()
+        .with_mut(|le| le.sequence_number = VOTING_START);
     client.vote(&voter1, &1u32);
 
-    // Now trying to deregister voter2 should fail with VotingAlreadyStarted (#8)
+    // Should fail with VotingAlreadyStarted (#8)
     client.deregister_voter(&voter2);
 }
 
@@ -316,6 +339,160 @@ fn test_deregister_unregistered_voter_rejected() {
     let (client, _admin) = setup(&env);
     let non_voter = Address::generate(&env);
 
-    // Should fail with NotRegistered (#4)
     client.deregister_voter(&non_voter);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #788 — Multi-choice ballot tests
+// ---------------------------------------------------------------------------
+
+/// Helper: 3-choice ballot ("red", "green", "blue").
+fn setup_multi(env: &Env) -> (BallotContractClient, Address) {
+    let admin = Address::generate(env);
+    let addr = env.register_contract(None, BallotContract);
+    let client = BallotContractClient::new(env, &addr);
+    let choices = vec![
+        env,
+        String::from_str(env, "red"),
+        String::from_str(env, "green"),
+        String::from_str(env, "blue"),
+    ];
+    client.initialize(&admin, &VOTING_START, &VOTING_END, &choices);
+    (client, admin)
+}
+
+/// tally_all returns per-choice counts for a 3-choice ballot.
+#[test]
+fn test_multi_choice_tally_all_returns_per_choice_counts() {
+    let env = make_env();
+    let (client, _admin) = setup_multi(&env);
+
+    let v0 = Address::generate(&env);
+    let v1 = Address::generate(&env);
+    let v2 = Address::generate(&env);
+    let v3 = Address::generate(&env);
+
+    client.register_voter(&v0);
+    client.register_voter(&v1);
+    client.register_voter(&v2);
+    client.register_voter(&v3);
+
+    env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
+
+    // v0 → red (0), v1 → green (1), v2 → green (1), v3 → blue (2)
+    client.vote(&v0, &0u32);
+    client.vote(&v1, &1u32);
+    client.vote(&v2, &1u32);
+    client.vote(&v3, &2u32);
+
+    let counts = client.tally_all();
+    assert_eq!(counts.len(), 3);
+    assert_eq!(counts.get(0).unwrap(), 1); // red
+    assert_eq!(counts.get(1).unwrap(), 2); // green
+    assert_eq!(counts.get(2).unwrap(), 1); // blue
+}
+
+/// get_choice_votes returns the correct tally for a specific index.
+#[test]
+fn test_multi_choice_get_choice_votes() {
+    let env = make_env();
+    let (client, _admin) = setup_multi(&env);
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
+    client.vote(&voter, &2u32); // blue
+
+    assert_eq!(client.get_choice_votes(&2u32), 1);
+    assert_eq!(client.get_choice_votes(&0u32), 0);
+    assert_eq!(client.get_choice_votes(&1u32), 0);
+}
+
+/// Out-of-range choice index is rejected (#6).
+#[test]
+fn test_multi_choice_invalid_index_rejected() {
+    let env = make_env();
+    let (client, _admin) = setup_multi(&env); // 3 choices: 0,1,2
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
+
+    // Index 3 is out of range.
+    let result = client.try_vote(&voter, &3u32);
+    assert!(result.is_err());
+}
+
+/// tally_all closes voting so further votes are rejected.
+#[test]
+fn test_multi_choice_tally_all_closes_voting() {
+    let env = make_env();
+    let (client, _admin) = setup_multi(&env);
+
+    let voter = Address::generate(&env);
+    client.register_voter(&voter);
+    env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
+    client.vote(&voter, &1u32);
+    client.tally_all();
+
+    let voter2 = Address::generate(&env);
+    client.register_voter(&voter2);
+    let result = client.try_vote(&voter2, &0u32);
+    assert!(result.is_err(), "voting should be closed after tally_all");
+}
+
+/// get_choices returns labels in declaration order.
+#[test]
+fn test_get_choices_returns_labels() {
+    let env = make_env();
+    let (client, _admin) = setup_multi(&env);
+
+    let choices = client.get_choices();
+    assert_eq!(choices.len(), 3);
+    assert_eq!(choices.get(0).unwrap(), String::from_str(&env, "red"));
+    assert_eq!(choices.get(1).unwrap(), String::from_str(&env, "green"));
+    assert_eq!(choices.get(2).unwrap(), String::from_str(&env, "blue"));
+}
+
+/// Empty choices list is rejected (#11).
+#[test]
+fn test_no_choices_rejected() {
+    let env = make_env();
+    let admin = Address::generate(&env);
+    let addr = env.register_contract(None, BallotContract);
+    let client = BallotContractClient::new(&env, &addr);
+    let empty: soroban_sdk::Vec<String> = soroban_sdk::Vec::new(&env);
+    let result = client.try_initialize(&admin, &VOTING_START, &VOTING_END, &empty);
+    assert!(result.is_err());
+}
+
+/// Five-choice ballot — all five choices receive votes and tally_all is correct.
+#[test]
+fn test_five_choice_ballot() {
+    let env = make_env();
+    let admin = Address::generate(&env);
+    let addr = env.register_contract(None, BallotContract);
+    let client = BallotContractClient::new(&env, &addr);
+    let choices = vec![
+        &env,
+        String::from_str(&env, "a"),
+        String::from_str(&env, "b"),
+        String::from_str(&env, "c"),
+        String::from_str(&env, "d"),
+        String::from_str(&env, "e"),
+    ];
+    client.initialize(&admin, &VOTING_START, &VOTING_END, &choices);
+
+    for i in 0u32..5 {
+        let voter = Address::generate(&env);
+        client.register_voter(&voter);
+        env.ledger().with_mut(|l| l.sequence_number = VOTING_START);
+        client.vote(&voter, &i);
+    }
+
+    let counts = client.tally_all();
+    assert_eq!(counts.len(), 5);
+    for i in 0..5 {
+        assert_eq!(counts.get(i).unwrap(), 1);
+    }
 }

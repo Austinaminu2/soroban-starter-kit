@@ -1,0 +1,16 @@
+CrowdfundError::AlreadyInitialized = 1
+CrowdfundError::NotInitialized = 2
+CrowdfundError::DeadlinePassed = 3
+CrowdfundError::DeadlineNotReached = 4
+CrowdfundError::GoalAlreadyMet = 5
+CrowdfundError::GoalNotMet = 6
+CrowdfundError::AlreadyClaimed = 7
+CrowdfundError::NothingToPledge = 8
+CrowdfundError::NothingToWithdraw = 9
+CrowdfundError::InvalidAmount = 10
+CrowdfundError::InvalidDeadline = 11
+CrowdfundError::InvalidGoal = 12
+CrowdfundError::NotAuthorized = 13
+CrowdfundError::InvalidTier = 14
+CrowdfundError::PledgeCapExceeded = 15
+CrowdfundError::DeadlineAlreadyExtended = 16
