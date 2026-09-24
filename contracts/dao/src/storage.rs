@@ -1,7 +1,7 @@
 // `#[contracttype]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
-use soroban_sdk::{Address, String, contracttype};
+use soroban_sdk::{Address, String, Symbol, Val, Vec, contracttype};
 
 /// Instance-storage keys (contract-level state).
 #[contracttype]
@@ -13,6 +13,17 @@ pub enum DataKey {
     Quorum,
     ProposalCount,
     Initialized,
+    /// Configurable bond amount escrowed per proposal (issue #1106).
+    ProposalBond,
+    /// Adaptive quorum parameters (issue #1107).
+    MinQuorumBps,
+    MaxQuorumBps,
+    /// Number of past proposals tracked for EMA smoothing (issue #1107).
+    QuorumEmaWindow,
+    /// Current smoothed quorum BPS (0–10_000). Stored as u32.
+    QuorumEmaBps,
+    /// Number of proposals included in the EMA so far.
+    QuorumEmaCount,
 }
 
 /// Persistent-storage keys (per-proposal and per-vote data).
@@ -48,6 +59,11 @@ impl core::fmt::Display for ProposalState {
     }
 }
 
+/// A governance proposal.
+///
+/// `action_target`, `action_function`, and `action_args` are optional; when
+/// `action_target` is `Some`, `execute_proposal` will dispatch the call via
+/// `env.invoke_contract` (issue #1108).
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Proposal {
@@ -59,4 +75,14 @@ pub struct Proposal {
     pub yes_votes: i128,
     pub no_votes: i128,
     pub state: ProposalState,
+    // ── Executable action payload (issue #1108) ──────────────────────────────
+    /// Optional target contract to call on execution.
+    pub action_target: Option<Address>,
+    /// Function name to invoke on the target contract.
+    pub action_function: Option<Symbol>,
+    /// Arguments forwarded to the target function.
+    pub action_args: Option<Vec<Val>>,
+    // ── Bond tracking (issue #1106) ──────────────────────────────────────────
+    /// Token amount escrowed by the proposer at submission time.
+    pub bond_amount: i128,
 }

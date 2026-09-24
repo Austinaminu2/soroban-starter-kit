@@ -1,0 +1,12 @@
+DaoError::NotAuthorized = 1
+DaoError::AlreadyInitialized = 2
+DaoError::NotInitialized = 3
+DaoError::ProposalNotFound = 4
+DaoError::InvalidState = 5
+DaoError::DeadlineNotReached = 6
+DaoError::AlreadyVoted = 7
+DaoError::QuorumNotMet = 8
+DaoError::ProposalRejected = 9
+DaoError::InsufficientVotingPower = 10
+DaoError::InsufficientBondBalance = 11
+DaoError::ActionFailed = 12
