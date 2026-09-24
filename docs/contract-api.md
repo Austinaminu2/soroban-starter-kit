@@ -650,32 +650,24 @@ The subscriber must pre-approve this contract as a token spender (`token.approve
 
 **Location:** `contracts/swap/src/lib.rs`
 
-> **Known issue:** `lib.rs` currently contains corrupted/duplicated code — both
-> `set_fee_bps` and `get_fee_bps` are defined twice in the same `impl` block,
-> and some branches reference states/errors (`SwapState::Pending`/`Accepted`,
-> `SwapError::SwapNotPending`/`SwapExpired`) that don't exist in `storage.rs`
-> / `errors.rs` (which define `SwapState::Open`/`Completed`/`Cancelled` and
-> `SwapError::InvalidState`/`DeadlineExpired`). The table below documents the
-> coherent, internally-consistent subset of the file using the canonical
-> names from `errors.rs`/`storage.rs`. Treat this section as a
-> known-incomplete placeholder until the contract code itself is fixed in a
-> separate PR — see the note in `error-reference.md`'s Swap section.
-
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
-| `initialize` | `env: Env, admin: Address, fee_bps: u32` | `Result<(), SwapError>` | `AlreadyInitialized`, `InvalidFee` |
+| `initialize` | `env: Env, admin: Address, treasury: Address, fee_bps: u32` | `Result<(), SwapError>` | `AlreadyInitialized`, `InvalidFee` |
 | `set_treasury` | `env: Env, new_treasury: Address` | `Result<(), SwapError>` | `NotInitialized`, `NotAuthorized` |
 | `set_fee_bps` | `env: Env, new_fee_bps: u32` | `Result<(), SwapError>` | `NotInitialized`, `NotAuthorized`, `InvalidFee` |
 | `set_admin` | `env: Env, new_admin: Address` | `Result<(), SwapError>` | `NotInitialized`, `NotAuthorized` |
 | `get_admin` | `env: Env` | `Result<Address, SwapError>` | `NotInitialized` |
 | `get_treasury` | `env: Env` | `Result<Address, SwapError>` | `NotInitialized` |
 | `get_fee_bps` | `env: Env` | `Result<u32, SwapError>` | `NotInitialized` |
+| `swap_count` | `env: Env` | `Result<u32, SwapError>` | `NotInitialized` |
 | `propose_swap` | `env: Env, party_a: Address, token_a: Address, amount_a: i128, token_b: Address, amount_b: i128, expires_at: u32` | `Result<u32, SwapError>` | `NotInitialized`, `InvalidDeadline` |
 | `accept_swap` | `env: Env, swap_id: u32, party_b: Address` | `Result<u32, SwapError>` | `NotInitialized`, `SwapNotFound`, `InvalidState`, `DeadlineExpired` |
 | `cancel_swap` | `env: Env, swap_id: u32` | `Result<(), SwapError>` | `SwapNotFound`, `InvalidState`, `NotAuthorized` |
 | `get_swap` | `env: Env, swap_id: u32` | `Result<SwapInfo, SwapError>` | `SwapNotFound` |
 
-`accept_swap` deducts a `fee_bps` fee (paid to the admin) from `token_b`'s transfer to party A, then executes both legs of the swap atomically.
+`propose_swap` escrows `token_a` and writes the complete `SwapInfo` under the persistent composite key `DataKey::Swap(swap_id)`. The instance entry contains only configuration and the monotonic counter; every mutation and read of a swap bumps that swap's persistent TTL.
+
+`accept_swap` deducts a `fee_bps` fee (paid to the configured treasury) from `token_b`'s transfer to party A, then executes both legs of the swap atomically. `cancel_swap` returns the escrowed `token_a` to party A.
 
 **Errors:**
 - `NotAuthorized` (1) — Caller not permitted

@@ -3,7 +3,11 @@
 
 use soroban_sdk::{Address, contracttype};
 
-/// Instance-storage keys.
+/// Configuration and persistent swap keys.
+///
+/// Configuration and the monotonic counter are kept in instance storage. Each
+/// individual swap is stored under a composite persistent key so transaction
+/// data cannot grow the instance entry.
 #[contracttype]
 #[derive(Clone)]
 pub enum DataKey {
@@ -12,12 +16,6 @@ pub enum DataKey {
     Admin,
     Treasury,
     FeeBps,
-}
-
-/// Persistent-storage key for individual swaps.
-#[contracttype]
-#[derive(Clone)]
-pub enum SwapKey {
     Swap(u32),
 }
 
