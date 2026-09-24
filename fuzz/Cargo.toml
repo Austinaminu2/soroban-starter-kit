@@ -14,6 +14,7 @@ soroban-swap-template = { path = "../contracts/swap" }
 soroban-airdrop-template = { path = "../contracts/airdrop" }
 soroban-lottery-template = { path = "../contracts/lottery" }
 soroban-oracle-template = { path = "../contracts/oracle" }
+soroban-marketplace-template = { path = "../contracts/marketplace" }
 libfuzzer-sys = "0.4"
 
 [[bin]]
@@ -66,3 +67,9 @@ doc = false
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "marketplace_state_machine"
+path = "fuzz_targets/marketplace_state_machine.rs"
+test = false
+doc = false

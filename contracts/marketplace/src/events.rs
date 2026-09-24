@@ -63,4 +63,38 @@ pub fn payment_token_allowed(env: &Env, token: &Address, allowed: bool) {
 pub fn whitelist_enabled(env: &Env, enabled: bool) {
     env.events()
         .publish((Symbol::new(env, "whitelist_enabled"),), enabled);
+pub fn collection_offer_made(
+    env: &Env,
+    offer_id: u64,
+    buyer: &Address,
+    nft_contract: &Address,
+    amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "coll_offered"), offer_id),
+        (buyer.clone(), nft_contract.clone(), amount),
+    );
+}
+
+pub fn collection_offer_accepted(
+    env: &Env,
+    offer_id: u64,
+    seller: &Address,
+    token_id: u32,
+    amount: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "coll_offer_accepted"), offer_id),
+        (seller.clone(), token_id, amount),
+    );
+}
+
+pub fn collection_offer_cancelled(env: &Env, offer_id: u64, buyer: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "coll_offer_cancelled"), offer_id), buyer.clone());
+}
+
+pub fn royalty_splits_set(env: &Env, admin: &Address, total_bps: u32) {
+    env.events()
+        .publish((Symbol::new(env, "royalty_splits"),), (admin.clone(), total_bps));
 }

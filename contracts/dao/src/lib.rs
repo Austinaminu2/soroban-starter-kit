@@ -19,6 +19,12 @@
 //! The original proposer may call `proposer_cancel_proposal` to retract their
 //! proposal **before any vote has been cast**. This lets them correct mistakes
 //! without waiting for the voting period to lapse.
+//!
+//! ## Proposal listing (#1110)
+//!
+//! `get_proposals(cursor, limit, state)` returns proposals in ascending ID
+//! order, optionally filtered by [`ProposalState`], at most [`MAX_PAGE_SIZE`]
+//! per call. Pass the returned `next_cursor` to fetch the following page.
 
 use soroban_sdk::{Address, Env, String, Symbol, Vec, contract, contractimpl, token};
 
@@ -27,9 +33,12 @@ mod events;
 mod storage;
 
 pub use errors::DaoError;
-pub use storage::{DataKey, Proposal, ProposalKey, ProposalState, VoteKey};
+pub use storage::{DataKey, Proposal, ProposalKey, ProposalPage, ProposalState, VoteKey};
 
-use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
+use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, paginate};
+
+/// Maximum number of proposals returned by a single `get_proposals` call.
+pub const MAX_PAGE_SIZE: u32 = 50;
 
 fn bump_instance(env: &Env) {
     env.storage()
@@ -324,14 +333,12 @@ mod contract {
                 // unreachable through `token::Client`. Invoke it by symbol instead; this
                 // requires the configured governance token to implement `total_supply`
                 // (as `soroban-token-template` does).
-                let total_supply: i128 = env.invoke_contract(
-                    &token,
-                    &Symbol::new(&env, "total_supply"),
-                    Vec::new(&env),
-                );
+                let total_supply: i128 =
+                    env.invoke_contract(&token, &Symbol::new(&env, "total_supply"), Vec::new(&env));
                 // total_votes / total_supply >= quorum_bps / 10_000
                 // ⟺ total_votes * 10_000 >= quorum_bps * total_supply
-                if total_votes * 10_000 < i128::from(quorum_bps) * proposal.total_supply_at_creation {
+                if total_votes * 10_000 < i128::from(quorum_bps) * proposal.total_supply_at_creation
+                {
                     return Err(DaoError::QuorumNotMet);
                 }
             }
@@ -456,6 +463,53 @@ mod contract {
                 .instance()
                 .get(&DataKey::ProposalCount)
                 .unwrap_or(0)
+        }
+
+        /// List proposals with cursor-based pagination (#1110).
+        ///
+        /// `cursor` is the proposal ID to resume scanning from (pass `0` to
+        /// start from the beginning). `limit` is clamped to
+        /// `[1, MAX_PAGE_SIZE]`. When `state` is `Some`, only proposals in
+        /// that [`ProposalState`] are returned.
+        ///
+        /// Returns a [`ProposalPage`] whose `next_cursor` is `None` once the
+        /// end of the proposal range has been reached.
+        pub fn get_proposals(
+            env: Env,
+            cursor: u32,
+            limit: u32,
+            state: Option<ProposalState>,
+        ) -> ProposalPage {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ProposalCount)
+                .unwrap_or(0);
+
+            let page = paginate(
+                &env,
+                cursor,
+                limit,
+                MAX_PAGE_SIZE,
+                |c: u32| {
+                    let next = c.saturating_add(1);
+                    if next < count { Some(next) } else { None }
+                },
+                |c: u32| {
+                    if c >= count {
+                        return None;
+                    }
+                    env.storage()
+                        .persistent()
+                        .get::<_, Proposal>(&ProposalKey::Proposal(c))
+                        .filter(|p| state.is_none_or(|s| p.state == s))
+                },
+            );
+
+            ProposalPage {
+                proposals: page.items,
+                next_cursor: page.next_cursor,
+            }
         }
 
         fn require_initialized(env: &Env) -> Result<(), DaoError> {

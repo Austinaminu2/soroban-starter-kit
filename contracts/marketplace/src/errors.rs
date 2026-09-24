@@ -25,6 +25,9 @@ pub enum MarketplaceError {
     EmptyBatch = 16,
     ListingStillActive = 17,
     Reentrant = 18,
+    PriceExceedsMax = 13,
+    CollectionOfferNotFound = 14,
+    CollectionOfferExpired = 15,
 }
 
 impl_display_error!(
@@ -47,6 +50,9 @@ impl_display_error!(
     EmptyBatch          => "empty batch",
     ListingStillActive  => "listing still active",
     Reentrant           => "reentrant call",
+    PriceExceedsMax     => "listing price exceeds buyer max price",
+    CollectionOfferNotFound => "collection offer not found",
+    CollectionOfferExpired  => "collection offer expired",
 );
 
 #[cfg(test)]
@@ -79,6 +85,9 @@ MarketplaceError::BatchTooLarge = {}\n\
 MarketplaceError::EmptyBatch = {}\n\
 MarketplaceError::ListingStillActive = {}\n\
 MarketplaceError::Reentrant = {}\n",
+MarketplaceError::PriceExceedsMax = {}\n\
+MarketplaceError::CollectionOfferNotFound = {}\n\
+MarketplaceError::CollectionOfferExpired = {}\n",
             MarketplaceError::AlreadyInitialized as u32,
             MarketplaceError::NotInitialized as u32,
             MarketplaceError::NotAuthorized as u32,
@@ -97,6 +106,9 @@ MarketplaceError::Reentrant = {}\n",
             MarketplaceError::EmptyBatch as u32,
             MarketplaceError::ListingStillActive as u32,
             MarketplaceError::Reentrant as u32,
+            MarketplaceError::PriceExceedsMax as u32,
+            MarketplaceError::CollectionOfferNotFound as u32,
+            MarketplaceError::CollectionOfferExpired as u32,
         )
     }
 

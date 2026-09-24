@@ -26,6 +26,13 @@ pub enum DataKey {
     AllowedToken(Address),
     /// Reentrancy guard held while a sale or batch operation is in progress (instance).
     Locked,
+    /// Marketplace-wide multi-recipient royalty split, `Vec<(recipient, bps)>` (instance).
+    /// When set and non-empty it supersedes `RoyaltyBps`/`RoyaltyRecipient`.
+    RoyaltySplits,
+    /// Next collection offer ID counter (instance).
+    NextCollectionOfferId,
+    /// Escrowed collection-wide floor offer (persistent).
+    CollectionOffer(u64),
 }
 
 /// State of a single NFT listing.
@@ -85,4 +92,17 @@ pub struct ListingParams {
     pub payment_token: Address,
     /// Optional ledger sequence after which the listing can no longer be bought.
     pub expires_at: Option<u32>,
+/// An escrowed collection-wide floor offer: `buyer` will pay `amount` for ANY
+/// token of `nft_contract`, and any holder of such a token may accept it.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollectionOffer {
+    /// The buyer whose funds are escrowed.
+    pub buyer: Address,
+    /// The NFT collection the offer applies to.
+    pub nft_contract: Address,
+    /// Escrowed amount in payment-token units.
+    pub amount: i128,
+    /// Ledger sequence after which the offer can no longer be accepted.
+    pub expires_at: u32,
 }

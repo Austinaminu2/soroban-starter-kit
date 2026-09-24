@@ -16,3 +16,6 @@ MarketplaceError::BatchTooLarge = 15
 MarketplaceError::EmptyBatch = 16
 MarketplaceError::ListingStillActive = 17
 MarketplaceError::Reentrant = 18
+MarketplaceError::PriceExceedsMax = 13
+MarketplaceError::CollectionOfferNotFound = 14
+MarketplaceError::CollectionOfferExpired = 15
