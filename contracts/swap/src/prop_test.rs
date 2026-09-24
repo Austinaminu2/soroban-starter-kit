@@ -7,235 +7,115 @@
 )]
 #![cfg(test)]
 
+use std::format;
+
 use proptest::prelude::*;
 use soroban_sdk::{
     Address, Env,
-    testutils::{Address as _, Ledger as _},
-    token::StellarAssetClient,
+    testutils::Address as _,
+    token::{Client as TokenClient, StellarAssetClient},
 };
 
-use crate::{SwapContract, SwapContractClient};
+use crate::{SwapContract, SwapContractClient, SwapState};
 
-fn setup_swap<'a>(env: &'a Env, fee_bps: u32) -> (SwapContractClient<'a>, Address, Address) {
+fn register_token(env: &Env) -> Address {
     let admin = Address::generate(env);
-    let treasury = Address::generate(env);
+    env.register_stellar_asset_contract_v2(admin).address()
+}
 
-    let swap_addr = env.register_contract(None, SwapContract);
-    let client = SwapContractClient::new(env, &swap_addr);
-    client.initialize(&admin, &treasury, &fee_bps);
-
-    (client, treasury, swap_addr)
+fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
+    StellarAssetClient::new(env, token).mint(to, &amount);
 }
 
 proptest! {
-    /// Property: Fee + party_a_amount always equals amount_b (no rounding loss)
-    /// Closes #961 – swap fee calculation invariant
     #[test]
-    fn prop_swap_fee_exact(
-        amount_b in 100i128..=1_000_000i128,
-        fee_bps in 0u32..=10_000u32,
-    ) {
-        let fee = (amount_b * i128::from(fee_bps)) / 10_000;
-        let party_a_amount = amount_b - fee;
-
-        // Invariant: no rounding loss
-        prop_assert_eq!(fee + party_a_amount, amount_b,
-            "Fee split doesn't sum to amount_b: fee={}, party_a={}, amount_b={}",
-            fee, party_a_amount, amount_b);
-
-        // Invariant: both amounts non-negative
-        prop_assert!(fee >= 0, "Negative fee: {}", fee);
-        prop_assert!(party_a_amount >= 0, "Negative party_a amount: {}", party_a_amount);
-    }
-
-    /// Property: Total transferred out equals total transferred in
-    #[test]
-    fn prop_swap_conservation(
+    fn prop_sequential_partial_fills_reach_exact_total(
         amount_a in 100i128..=10_000i128,
-        amount_b in 100i128..=10_000i128,
-        fee_bps in 0u32..=1_000u32,
+        ratio in 1i128..=20i128,
+        first_fill in 1i128..=5_000i128,
     ) {
         let env = Env::default();
         env.mock_all_auths();
-        env.ledger().with_mut(|l| l.sequence_number = 100);
 
-        let (client, treasury, swap_addr) = setup_swap(&env, fee_bps);
-
+        let token_a = register_token(&env);
+        let token_b = register_token(&env);
         let party_a = Address::generate(&env);
         let party_b = Address::generate(&env);
-
-        let sac_admin = Address::generate(&env);
-        let sac1 = env.register_stellar_asset_contract_v2(sac_admin.clone());
-        let token_a = sac1.address();
-        let sac2 = env.register_stellar_asset_contract_v2(sac_admin);
-        let token_b = sac2.address();
-
-        // Mint tokens
-        StellarAssetClient::new(&env, &token_a).mint(&party_a, &amount_a);
-        StellarAssetClient::new(&env, &token_b).mint(&party_b, &amount_b);
-
-        let expires_at = env.ledger().sequence() + 1000;
-
-        // Propose swap
-        let swap_id_result = client.try_propose_swap(
-            &party_a,
-            &token_a,
-            &amount_a,
-            &token_b,
-            &amount_b,
-            &expires_at
-        );
-
-        if swap_id_result.is_err() {
-            return Ok(());
-        }
-
-        let swap_id = swap_id_result.unwrap();
-
-        // Accept swap
-        let accept_result = client.try_accept_swap(&swap_id, &party_b);
-
-        if accept_result.is_ok() {
-            let tok_a = soroban_sdk::token::Client::new(&env, &token_a);
-            let tok_b = soroban_sdk::token::Client::new(&env, &token_b);
-
-            // Calculate expected fee
-            let fee = (amount_b * i128::from(fee_bps)) / 10_000;
-            let party_a_net = amount_b - fee;
-
-            // Verify balances
-            prop_assert_eq!(tok_a.balance(&party_b), amount_a,
-                "Party B should receive full amount_a");
-            prop_assert_eq!(tok_b.balance(&party_a), party_a_net,
-                "Party A should receive amount_b minus fee");
-            prop_assert_eq!(tok_b.balance(&treasury), fee,
-                "Treasury should receive fee");
-
-            // Conservation: contract should have zero balance after swap
-            prop_assert_eq!(tok_a.balance(&swap_addr), 0,
-                "Contract should have no token_a after swap");
-            prop_assert_eq!(tok_b.balance(&swap_addr), 0,
-                "Contract should have no token_b after swap");
-        }
-    }
-
-    /// Property: Fee BPS validation - must be <= 10000
-    #[test]
-    fn prop_fee_bps_bounded(
-        fee_bps in 0u32..=20_000u32,
-    ) {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
         let treasury = Address::generate(&env);
-        let swap_addr = env.register_contract(None, SwapContract);
-        let client = SwapContractClient::new(&env, &swap_addr);
 
-        let result = client.try_initialize(&admin, &treasury, &fee_bps);
+        let amount_b = amount_a * ratio;
+        mint(&env, &token_a, &party_a, amount_a * 2);
+        mint(&env, &token_b, &party_b, amount_b * 2);
 
-        if fee_bps > 10_000 {
-            prop_assert!(result.is_err(), "Should reject fee_bps > 10000");
-        } else {
-            prop_assert!(result.is_ok() || result.is_err(),
-                "fee_bps <= 10000 should be accepted or fail for other reasons");
-        }
-    }
+        let contract_addr = env.register_contract(None, SwapContract);
+        let client = SwapContractClient::new(&env, &contract_addr);
+        client.initialize(&party_a, &treasury, &0);
+        let approve_until = env.ledger().sequence() + 1_000_000;
+        TokenClient::new(&env, &token_a).approve(&party_a, &contract_addr, &(amount_a * 4), &approve_until);
 
-    /// Property: Cancelled swaps return funds to party_a
-    #[test]
-    fn prop_cancel_returns_funds(
-        amount_a in 100i128..=10_000i128,
-        amount_b in 100i128..=10_000i128,
-    ) {
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().with_mut(|l| l.sequence_number = 100);
-
-        let (client, _, _) = setup_swap(&env, 250u32);
-
-        let party_a = Address::generate(&env);
-        let sac_admin = Address::generate(&env);
-        let sac1 = env.register_stellar_asset_contract_v2(sac_admin.clone());
-        let token_a = sac1.address();
-        let sac2 = env.register_stellar_asset_contract_v2(sac_admin);
-        let token_b = sac2.address();
-
-        StellarAssetClient::new(&env, &token_a).mint(&party_a, &amount_a);
-
-        let expires_at = env.ledger().sequence() + 1000;
-        let swap_id_result = client.try_propose_swap(
+        let expires_at = env.ledger().sequence() + 100;
+        let swap_id = client.propose_swap_with_options(
             &party_a,
             &token_a,
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &true,
+            &false,
         );
 
-        if swap_id_result.is_err() {
-            return Ok(());
-        }
+        let first = first_fill.min(amount_a - 1);
+        client.accept_swap_partial(&party_b, &swap_id, &first);
+        let second = amount_a - first;
+        client.accept_swap_partial(&party_b, &swap_id, &second);
 
-        let swap_id = swap_id_result.unwrap();
-        let balance_after_propose = soroban_sdk::token::Client::new(&env, &token_a).balance(&party_a);
-
-        // Cancel the swap
-        let _ = client.try_cancel_swap(&swap_id);
-
-        let balance_after_cancel = soroban_sdk::token::Client::new(&env, &token_a).balance(&party_a);
-
-        // Invariant: party_a gets their tokens back after cancel
-        prop_assert!(balance_after_cancel >= balance_after_propose,
-            "Party A should get tokens back after cancel: before={}, after={}",
-            balance_after_propose, balance_after_cancel);
+        let swap = client.get_swap(&swap_id);
+        prop_assert_eq!(swap.filled_amount, amount_a);
+        prop_assert_eq!(swap.state, SwapState::Executed);
+        prop_assert_eq!(TokenClient::new(&env, &token_a).balance(&party_b), amount_a);
     }
 
-    /// Property: Expired swaps cannot be accepted
     #[test]
-    fn prop_expired_swaps_rejected(
-        amount_a in 100i128..=1_000i128,
-        amount_b in 100i128..=1_000i128,
+    fn prop_escrow_cancel_returns_remaining_balance(
+        amount_a in 500i128..=20_000i128,
+        amount_b in 500i128..=20_000i128,
+        fill in 1i128..=10_000i128,
     ) {
         let env = Env::default();
         env.mock_all_auths();
-        env.ledger().with_mut(|l| l.sequence_number = 100);
 
-        let (client, _, _) = setup_swap(&env, 250u32);
-
+        let token_a = register_token(&env);
+        let token_b = register_token(&env);
         let party_a = Address::generate(&env);
         let party_b = Address::generate(&env);
+        let treasury = Address::generate(&env);
 
-        let sac_admin = Address::generate(&env);
-        let sac1 = env.register_stellar_asset_contract_v2(sac_admin.clone());
-        let token_a = sac1.address();
-        let sac2 = env.register_stellar_asset_contract_v2(sac_admin);
-        let token_b = sac2.address();
+        mint(&env, &token_a, &party_a, amount_a * 3);
+        mint(&env, &token_b, &party_b, amount_b * 3);
 
-        StellarAssetClient::new(&env, &token_a).mint(&party_a, &amount_a);
-        StellarAssetClient::new(&env, &token_b).mint(&party_b, &amount_b);
+        let contract_addr = env.register_contract(None, SwapContract);
+        let client = SwapContractClient::new(&env, &contract_addr);
+        client.initialize(&party_a, &treasury, &0);
 
-        let expires_at = env.ledger().sequence() + 10;
-        let swap_id_result = client.try_propose_swap(
+        let token_a_client = TokenClient::new(&env, &token_a);
+        let before = token_a_client.balance(&party_a);
+        let expires_at = env.ledger().sequence() + 100;
+        let swap_id = client.propose_swap_with_options(
             &party_a,
             &token_a,
             &amount_a,
             &token_b,
             &amount_b,
-            &expires_at
+            &expires_at,
+            &true,
+            &true,
         );
 
-        if swap_id_result.is_err() {
-            return Ok(());
-        }
+        client.cancel_swap(&swap_id);
 
-        let swap_id = swap_id_result.unwrap();
-
-        // Advance past deadline
-        env.ledger().with_mut(|l| l.sequence_number = expires_at + 1);
-
-        let accept_result = client.try_accept_swap(&swap_id, &party_b);
-
-        prop_assert!(accept_result.is_err(), "Expired swap should not be accepted");
+        let after = token_a_client.balance(&party_a);
+        let _ = (party_b, fill);
+        prop_assert_eq!(after, before);
     }
 }

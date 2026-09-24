@@ -18,6 +18,9 @@ pub enum SwapError {
     AlreadyInitialized = 9,
     NotInitialized = 10,
     InvalidFee = 11,
+    BasketSwapNotFound = 12,
+    MathOverflow = 13,
+    StorageError = 14,
 }
 
 impl_display_error!(
@@ -33,6 +36,9 @@ impl_display_error!(
     AlreadyInitialized => "contract already initialized",
     NotInitialized     => "contract not initialized",
     InvalidFee         => "invalid fee basis points",
+    BasketSwapNotFound => "basket swap not found",
+    MathOverflow       => "arithmetic overflow",
+    StorageError       => "storage error",
 );
 
 #[cfg(test)]

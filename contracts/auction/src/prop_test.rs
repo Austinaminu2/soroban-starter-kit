@@ -7,6 +7,9 @@
 )]
 #![cfg(test)]
 
+use std::format;
+use std::vec;
+
 use proptest::prelude::*;
 use soroban_sdk::{
     Address, Env,
@@ -54,7 +57,7 @@ proptest! {
         env.mock_all_auths();
         env.ledger().with_mut(|l| l.sequence_number = 100);
 
-        let (client, _seller, token_addr, auction_addr) = setup_auction(&env, 50i128, 10i128);
+        let (client, seller, token_addr, auction_addr) = setup_auction(&env, 50i128, 10i128);
 
         let mut bidders = vec![];
         let mut total_deposited = 0i128;
@@ -105,9 +108,10 @@ proptest! {
             "Refunds exceeded deposits: deposited={}, withdrawn={}",
             total_deposited, total_withdrawn);
 
-        // Invariant: contract balance + total_withdrawn = total_deposited
+        // Invariant: contract balance + total_withdrawn + seller_payout = total_deposited
         let contract_balance = soroban_sdk::token::Client::new(&env, &token_addr).balance(&auction_addr);
-        prop_assert_eq!(contract_balance + total_withdrawn, total_deposited,
+        let seller_payout = soroban_sdk::token::Client::new(&env, &token_addr).balance(&seller);
+        prop_assert_eq!(contract_balance + total_withdrawn + seller_payout, total_deposited,
             "Balance accounting mismatch");
     }
 
@@ -159,7 +163,7 @@ proptest! {
             StellarAssetClient::new(&env, &token_addr).mint(&bidder, &current_bid);
 
             if client.try_bid(&bidder, &current_bid).is_ok() {
-                let info = client.get_info().unwrap();
+                let info = client.get_info();
                 prop_assert!(info.highest_bid >= prev_highest,
                     "Highest bid decreased: {} -> {}", prev_highest, info.highest_bid);
                 prev_highest = info.highest_bid;

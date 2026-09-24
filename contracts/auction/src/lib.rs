@@ -21,6 +21,9 @@
 //! only transfer to the seller if `highest_bid >= reserve_price`; otherwise
 //! the highest bidder's funds are returned.
 
+#[cfg(test)]
+extern crate std;
+
 use soroban_sdk::{Address, Env, contract, contractimpl, token};
 
 mod errors;
@@ -208,10 +211,12 @@ mod contract {
                     .persistent()
                     .set(&DataKey::Pending(prev.clone()), &new_pending);
                 env.storage().persistent().extend_ttl(
-                    &DataKey::Pending(prev),
+                    &DataKey::Pending(prev.clone()),
                     LEDGER_LIFETIME_THRESHOLD,
                     LEDGER_BUMP_AMOUNT,
                 );
+                events::outbid(&env, &prev, highest_bid, amount);
+                events::refund_queued(&env, &prev, highest_bid);
             }
 
             env.storage()
@@ -430,6 +435,7 @@ mod contract {
                 .unwrap_or(false)
         }
     }
+}
 
 mod test;
 

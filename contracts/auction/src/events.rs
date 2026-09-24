@@ -12,6 +12,23 @@ pub fn bid_placed(env: &Env, bidder: &Address, amount: i128) {
         .publish((Symbol::new(env, "bid_placed"), bidder.clone()), amount);
 }
 
+pub fn outbid(
+    env: &Env,
+    outbid_bidder: &Address,
+    outbid_amount: i128,
+    new_highest_bid: i128,
+) {
+    env.events().publish(
+        (Symbol::new(env, "outbid"), outbid_bidder.clone()),
+        (outbid_amount, new_highest_bid),
+    );
+}
+
+pub fn refund_queued(env: &Env, bidder: &Address, amount: i128) {
+    env.events()
+        .publish((Symbol::new(env, "refund_queued"), bidder.clone()), amount);
+}
+
 pub fn ended(env: &Env, winner: &Address, amount: i128) {
     env.events()
         .publish((Symbol::new(env, "ended"), winner.clone()), amount);
