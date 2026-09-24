@@ -67,6 +67,32 @@ pub fn batch_executed(env: &Env, executed_ids: &Vec<u64>, skipped_count: u32) {
     );
 }
 
+pub fn transaction_queued(env: &Env, tx_id: u64, executable_at: u32) {
+    env.events()
+        .publish((Symbol::new(env, "queued"), tx_id), executable_at);
+}
+
+pub fn transaction_cancelled(env: &Env, tx_id: u64, canceller: &Address) {
+    env.events()
+        .publish((Symbol::new(env, "cancelled"), tx_id), canceller.clone());
+}
+
+pub fn timelock_updated(env: &Env, delay: u32) {
+    env.events()
+        .publish((Symbol::new(env, "timelock_set"),), delay);
+}
+
+pub fn spending_limit_updated(env: &Env, operator: &Address, token: &Address, daily_limit: i128) {
+    env.events().publish(
+        (Symbol::new(env, "spend_limit_set"), operator.clone()),
+        (token.clone(), daily_limit),
+    );
+}
+
+pub fn allowance_spent(env: &Env, operator: &Address, to: &Address, amount: i128, spent: i128) {
+    env.events().publish(
+        (Symbol::new(env, "allowance_spent"), operator.clone(), to.clone()),
+        (amount, spent),
 /// Emitted when the original proposer cancels a pending transaction (#1113).
 pub fn transaction_cancelled(env: &Env, tx_id: u64, proposer: &Address) {
     env.events()

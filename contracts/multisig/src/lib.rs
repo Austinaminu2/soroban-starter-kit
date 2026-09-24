@@ -24,6 +24,37 @@
 //! it against the input to determine which were skipped and why (check
 //! individual proposals or filter emitted events).
 //!
+//! ## Reentrancy guard (#1114)
+//!
+//! A global lock is held in instance storage for the duration of every
+//! external contract call made by the wallet (`execute_transaction`,
+//! `execute_batch`, `spend_allowance`). While the lock is held every
+//! state-changing entry point rejects with `Reentrant`, so an invoked contract
+//! cannot execute other proposals, spend the allowance, or alter the signer
+//! set / configuration before the first dispatch returns.
+//!
+//! ## Daily spending allowance (#1115)
+//!
+//! `set_spending_limit` (full threshold approval) designates a spending
+//! operator, a token and a `daily_limit`. The operator may then call
+//! `spend_allowance` to transfer up to `daily_limit` tokens per
+//! [`SPENDING_WINDOW_LEDGERS`] window without collecting signatures. The
+//! number of spends per window is additionally capped via
+//! `soroban_common::check_and_record`.
+//!
+//! ## Timelock (#1116)
+//!
+//! `set_timelock_delay` (full threshold approval) configures a delay in
+//! ledgers. When a proposal reaches threshold it is *queued*; it can only be
+//! executed once `queued_ledger + timelock_delay` has passed. During the
+//! delay any current signer may `cancel_transaction`. A delay of `0` (the
+//! default) preserves the original immediate-execution behaviour.
+//!
+//! ## Proposal enumeration (#1117)
+//!
+//! `get_transactions(cursor, limit, status, descending)` pages through
+//! proposals using `soroban_common::paginate`, optionally filtering by
+//! [`TxStatus`], and refreshes the TTL of every record it reads.
 //! ## Cancellation and revocation (#1113)
 //!
 //! The original proposer may `cancel_proposal` a pending transaction, and any
@@ -42,7 +73,7 @@
 #[cfg(test)]
 extern crate std;
 
-use soroban_sdk::{Address, Env, Map, Symbol, Val, Vec, contract, contractimpl};
+use soroban_sdk::{Address, Env, Map, Symbol, Val, Vec, contract, contractimpl, token};
 
 mod errors;
 mod events;
@@ -54,9 +85,24 @@ mod prop_test;
 mod test;
 
 pub use errors::MultisigError;
+pub use storage::{
+    DataKey, SignerWeight, SpendingConfig, Transaction, TransactionPage, TxStatus,
+};
+
+use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, check_and_record, paginate};
+
+/// Length of the spending-allowance window in ledgers (~24h at 5s/ledger).
+pub const SPENDING_WINDOW_LEDGERS: u32 = 17_280;
+
+/// Maximum number of `spend_allowance` calls per window.
+pub const MAX_SPENDS_PER_WINDOW: u32 = 24;
 pub use storage::{DataKey, SignerChange, SignerProposal, SignerWeight, Transaction};
 
-use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
+/// Maximum page size accepted by `get_transactions`.
+pub const MAX_PAGE_SIZE: u32 = 50;
+
+/// `check_and_record` namespace for allowance spends.
+const SPEND_RATE_NAMESPACE: u32 = 1_115;
 
 #[inline]
 fn bump_instance(env: &Env) {
@@ -75,6 +121,52 @@ fn bump_transaction(env: &Env, tx_id: u64) {
 }
 
 #[inline]
+fn is_locked(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::ReentrancyLock)
+        .unwrap_or(false)
+}
+
+/// Reject the call if an external invocation is currently in progress.
+#[inline]
+fn require_unlocked(env: &Env) -> Result<(), MultisigError> {
+    if is_locked(env) {
+        return Err(MultisigError::Reentrant);
+    }
+    Ok(())
+}
+
+#[inline]
+fn set_lock(env: &Env, locked: bool) {
+    if locked {
+        env.storage().instance().set(&DataKey::ReentrancyLock, &true);
+    } else {
+        env.storage().instance().remove(&DataKey::ReentrancyLock);
+    }
+}
+
+#[inline]
+fn timelock_delay(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TimelockDelay)
+        .unwrap_or(0)
+}
+
+/// Derive the lifecycle status of a proposal at the current ledger.
+fn status_of(env: &Env, tx: &Transaction) -> TxStatus {
+    if tx.executed {
+        TxStatus::Executed
+    } else if tx.cancelled {
+        TxStatus::Cancelled
+    } else if env.ledger().sequence() > tx.expiry_ledger {
+        TxStatus::Expired
+    } else if tx.queued_ledger.is_some() {
+        TxStatus::Queued
+    } else {
+        TxStatus::Pending
+    }
 fn bump_signer_proposal(env: &Env, proposal_id: u64) {
     env.storage().persistent().extend_ttl(
         &DataKey::SignerProposal(proposal_id),
@@ -239,6 +331,8 @@ mod contract {
             weight: u32,
             new_threshold: u32,
         ) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
+            let mut signers = Self::get_required_signers(&env)?;
             Self::require_threshold_approvals(&env, &approvals)?;
             Self::apply_add_signer(&env, &signer, weight, new_threshold)
         }
@@ -324,6 +418,9 @@ mod contract {
             signer: Address,
             proposal_id: u64,
         ) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
+            let signers = Self::get_required_signers(&env)?;
+            Self::require_threshold_approvals(&env, &approvals)?;
             Self::require_signer(&env, &signer)?;
             signer.require_auth();
 
@@ -415,6 +512,7 @@ mod contract {
             args: Vec<Val>,
             expiry_ledgers: u32,
         ) -> Result<u64, MultisigError> {
+            require_unlocked(&env)?;
             Self::require_signer(&env, &proposer)?;
             proposer.require_auth();
 
@@ -430,6 +528,7 @@ mod contract {
             signer: Address,
             tx_id: u64,
         ) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
             Self::require_signer(&env, &signer)?;
             signer.require_auth();
 
@@ -539,7 +638,13 @@ mod contract {
         /// `Vec<u64>` — IDs of proposals that were successfully executed during
         /// this call.  A `batch_executed` event is emitted with the executed IDs
         /// and the count of skipped proposals.
+        ///
+        /// Panics with `Reentrant` if called while an external invocation is
+        /// in progress, rather than silently skipping every proposal.
         pub fn execute_batch(env: Env, proposal_ids: Vec<u64>) -> Vec<u64> {
+            if is_locked(&env) {
+                soroban_sdk::panic_with_error!(&env, MultisigError::Reentrant);
+            }
             let mut executed_ids: Vec<u64> = Vec::new(&env);
             let mut skipped_count: u32 = 0;
 
@@ -556,6 +661,176 @@ mod contract {
 
             events::batch_executed(&env, &executed_ids, skipped_count);
             executed_ids
+        }
+
+        /// Queue a proposal whose accumulated weight meets the threshold but
+        /// which was not queued automatically (e.g. because the threshold was
+        /// lowered after the last signature). Anyone may call this (#1116).
+        pub fn queue_transaction(env: Env, tx_id: u64) -> Result<u32, MultisigError> {
+            require_unlocked(&env)?;
+            let mut transaction = Self::get_required_transaction(&env, tx_id)?;
+            Self::require_open(&env, &transaction)?;
+            if let Some(q) = transaction.queued_ledger {
+                return Ok(q.saturating_add(timelock_delay(&env)));
+            }
+            if transaction.accumulated_weight < Self::threshold(&env)? {
+                return Err(MultisigError::ThresholdNotMet);
+            }
+            let executable_at = Self::queue(&env, &mut transaction);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Transaction(tx_id), &transaction);
+            bump_transaction(&env, tx_id);
+            Ok(executable_at)
+        }
+
+        /// Cancel a pending or queued proposal (#1116).
+        ///
+        /// Any current signer may cancel. This gives honest signers a veto
+        /// during the timelock window if a quorum of keys is compromised and
+        /// used to queue a malicious transaction.
+        pub fn cancel_transaction(
+            env: Env,
+            signer: Address,
+            tx_id: u64,
+        ) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
+            Self::require_signer(&env, &signer)?;
+            signer.require_auth();
+
+            let mut transaction = Self::get_required_transaction(&env, tx_id)?;
+            Self::require_open(&env, &transaction)?;
+
+            transaction.cancelled = true;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Transaction(tx_id), &transaction);
+            bump_transaction(&env, tx_id);
+            events::transaction_cancelled(&env, tx_id, &signer);
+            Ok(())
+        }
+
+        /// Set the timelock delay in ledgers. Requires full threshold
+        /// approval (#1116). `0` disables the timelock.
+        pub fn set_timelock_delay(
+            env: Env,
+            approvals: Vec<Address>,
+            delay: u32,
+        ) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
+            Self::require_threshold_approvals(&env, &approvals)?;
+            env.storage().instance().set(&DataKey::TimelockDelay, &delay);
+            bump_instance(&env);
+            events::timelock_updated(&env, delay);
+            Ok(())
+        }
+
+        /// Return the configured timelock delay in ledgers (0 when disabled).
+        pub fn get_timelock_delay(env: Env) -> u32 {
+            timelock_delay(&env)
+        }
+
+        /// Configure the daily spending allowance. Requires full threshold
+        /// approval (#1115). A `daily_limit` of `0` disables spending.
+        ///
+        /// Changing the configuration resets the current spending window.
+        pub fn set_spending_limit(
+            env: Env,
+            approvals: Vec<Address>,
+            operator: Address,
+            token: Address,
+            daily_limit: i128,
+        ) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
+            Self::require_threshold_approvals(&env, &approvals)?;
+            if daily_limit < 0 {
+                return Err(MultisigError::InvalidAmount);
+            }
+            let config = SpendingConfig {
+                operator: operator.clone(),
+                token: token.clone(),
+                daily_limit,
+            };
+            env.storage()
+                .instance()
+                .set(&DataKey::SpendingConfig, &config);
+            env.storage().instance().remove(&DataKey::SpendingWindow);
+            bump_instance(&env);
+            events::spending_limit_updated(&env, &operator, &token, daily_limit);
+            Ok(())
+        }
+
+        /// Return the spending allowance configuration, if any.
+        pub fn get_spending_config(env: Env) -> Option<SpendingConfig> {
+            env.storage().instance().get(&DataKey::SpendingConfig)
+        }
+
+        /// Return the amount still spendable in the current window.
+        pub fn remaining_allowance(env: Env) -> i128 {
+            let Some(config) = Self::get_spending_config(env.clone()) else {
+                return 0;
+            };
+            let (_, spent) = Self::current_window(&env);
+            config.daily_limit.saturating_sub(spent).max(0)
+        }
+
+        /// Transfer `amount` of the configured token to `to` without
+        /// threshold approval, provided the operator stays within the daily
+        /// allowance and the per-window call cap (#1115).
+        ///
+        /// Returns the total spent in the current window after this transfer.
+        pub fn spend_allowance(
+            env: Env,
+            operator: Address,
+            to: Address,
+            amount: i128,
+        ) -> Result<i128, MultisigError> {
+            require_unlocked(&env)?;
+            let config: SpendingConfig = env
+                .storage()
+                .instance()
+                .get(&DataKey::SpendingConfig)
+                .ok_or(MultisigError::SpendingNotConfigured)?;
+            if operator != config.operator {
+                return Err(MultisigError::NotSpendingOperator);
+            }
+            operator.require_auth();
+            if amount <= 0 {
+                return Err(MultisigError::InvalidAmount);
+            }
+
+            let (window_start, spent) = Self::current_window(&env);
+            let new_spent = spent
+                .checked_add(amount)
+                .ok_or(MultisigError::DailyLimitExceeded)?;
+            if new_spent > config.daily_limit {
+                return Err(MultisigError::DailyLimitExceeded);
+            }
+            if !check_and_record(
+                &env,
+                SPEND_RATE_NAMESPACE,
+                &operator,
+                SPENDING_WINDOW_LEDGERS,
+                MAX_SPENDS_PER_WINDOW,
+            ) {
+                return Err(MultisigError::RateLimited);
+            }
+
+            env.storage()
+                .instance()
+                .set(&DataKey::SpendingWindow, &(window_start, new_spent));
+            bump_instance(&env);
+
+            set_lock(&env, true);
+            token::Client::new(&env, &config.token).transfer(
+                &env.current_contract_address(),
+                &to,
+                &amount,
+            );
+            set_lock(&env, false);
+
+            events::allowance_spent(&env, &operator, &to, amount, new_spent);
+            Ok(new_spent)
         }
 
         /// Return the current signer list.
@@ -595,6 +870,85 @@ mod contract {
             transaction
         }
 
+        /// Return the lifecycle status of a proposal, refreshing its TTL.
+        pub fn get_transaction_status(env: Env, tx_id: u64) -> Option<TxStatus> {
+            Self::get_transaction(env.clone(), tx_id).map(|tx| status_of(&env, &tx))
+        }
+
+        /// Page through proposals (#1117).
+        ///
+        /// - `cursor` — first proposal ID to visit. When `descending` is true
+        ///   a cursor beyond the newest ID starts at the newest proposal, so
+        ///   `u64::MAX` means "latest first".
+        /// - `limit` — clamped to `[1, MAX_PAGE_SIZE]`.
+        /// - `status` — when `Some`, only proposals in that status are
+        ///   returned; the scan still advances over non-matching IDs.
+        /// - `descending` — scan from newer to older IDs.
+        ///
+        /// Pass the returned `next_cursor` back to fetch the following page;
+        /// `None` means the scan is exhausted. Every proposal record read is
+        /// TTL-bumped. Removed (cleaned-up) proposals are skipped.
+        pub fn get_transactions(
+            env: Env,
+            cursor: u64,
+            limit: u32,
+            status: Option<TxStatus>,
+            descending: bool,
+        ) -> TransactionPage {
+            let next_id: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::NextTransactionId)
+                .unwrap_or(0);
+
+            let start = if descending {
+                if next_id == 0 {
+                    None
+                } else {
+                    Some(cursor.min(next_id.saturating_sub(1)))
+                }
+            } else if cursor < next_id {
+                Some(cursor)
+            } else {
+                None
+            };
+
+            let Some(start) = start else {
+                return TransactionPage {
+                    items: Vec::new(&env),
+                    next_cursor: None,
+                };
+            };
+
+            let page = paginate(
+                &env,
+                start,
+                limit,
+                MAX_PAGE_SIZE,
+                |c: u64| {
+                    if descending {
+                        c.checked_sub(1)
+                    } else {
+                        c.checked_add(1).filter(|n| *n < next_id)
+                    }
+                },
+                |c: u64| {
+                    let tx: Transaction =
+                        env.storage().persistent().get(&DataKey::Transaction(c))?;
+                    bump_transaction(&env, c);
+                    match status {
+                        Some(wanted) if status_of(&env, &tx) != wanted => None,
+                        _ => Some(tx),
+                    }
+                },
+            );
+
+            TransactionPage {
+                items: page.items,
+                next_cursor: page.next_cursor,
+            }
+        }
+
         /// Return the number of signatures on a proposal.
         pub fn signature_count(env: Env, tx_id: u64) -> Option<u32> {
             Self::get_transaction(env, tx_id).map(|tx| tx.signatures.len())
@@ -607,6 +961,7 @@ mod contract {
         /// Returns `Err(AlreadyExecuted)` if the proposal was already executed.
         /// Returns `Err(NotYetExpired)` if the proposal has not yet expired.
         pub fn cleanup_expired(env: Env, tx_id: u64) -> Result<(), MultisigError> {
+            require_unlocked(&env)?;
             let transaction = Self::get_required_transaction(&env, tx_id)?;
             if transaction.executed {
                 return Err(MultisigError::AlreadyExecuted);
@@ -652,7 +1007,7 @@ mod contract {
 
             let expiry_ledger = env.ledger().sequence().saturating_add(expiry_ledgers);
 
-            let transaction = Transaction {
+            let mut transaction = Transaction {
                 id: tx_id,
                 proposer: proposer.clone(),
                 target,
@@ -662,7 +1017,12 @@ mod contract {
                 accumulated_weight: proposer_weight,
                 executed: false,
                 expiry_ledger,
+                queued_ledger: None,
+                cancelled: false,
             };
+            if proposer_weight >= Self::threshold(env)? {
+                Self::queue(env, &mut transaction);
+            }
 
             env.storage()
                 .persistent()
@@ -679,12 +1039,7 @@ mod contract {
         #[inline]
         fn vote_phase(env: &Env, signer: &Address, tx_id: u64) -> Result<u32, MultisigError> {
             let mut transaction = Self::get_required_transaction(env, tx_id)?;
-            if transaction.executed {
-                return Err(MultisigError::AlreadyExecuted);
-            }
-            if env.ledger().sequence() > transaction.expiry_ledger {
-                return Err(MultisigError::ProposalExpired);
-            }
+            Self::require_open(env, &transaction)?;
             if contains(&transaction.signatures, signer) {
                 return Err(MultisigError::AlreadySigned);
             }
@@ -693,6 +1048,11 @@ mod contract {
             transaction.signatures.push_back(signer.clone());
             transaction.accumulated_weight = transaction.accumulated_weight.saturating_add(weight);
             let signature_count = transaction.signatures.len();
+            if transaction.queued_ledger.is_none()
+                && transaction.accumulated_weight >= Self::threshold(env)?
+            {
+                Self::queue(env, &mut transaction);
+            }
             env.storage()
                 .persistent()
                 .set(&DataKey::Transaction(tx_id), &transaction);
@@ -702,22 +1062,26 @@ mod contract {
 
         /// Phase 3 — verify accumulated weight meets threshold and execute.
         #[inline]
+        ///
+        /// A global reentrancy lock is held across the external invocation so
+        /// the target cannot re-enter any state-changing entry point (#1114).
+        /// When a timelock is configured the proposal must have been queued
+        /// and its delay must have elapsed (#1116).
         fn execute_phase(env: &Env, tx_id: u64) -> Result<Val, MultisigError> {
+            require_unlocked(env)?;
             let mut transaction = Self::get_required_transaction(env, tx_id)?;
-            if transaction.executed {
-                return Err(MultisigError::AlreadyExecuted);
-            }
-            if env.ledger().sequence() > transaction.expiry_ledger {
-                return Err(MultisigError::ProposalExpired);
+            Self::require_open(env, &transaction)?;
+
+            if transaction.accumulated_weight < Self::threshold(env)? {
+                return Err(MultisigError::ThresholdNotMet);
             }
 
-            let threshold: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::Threshold)
-                .ok_or(MultisigError::NotInitialized)?;
-            if transaction.accumulated_weight < threshold {
-                return Err(MultisigError::ThresholdNotMet);
+            let delay = timelock_delay(env);
+            if delay > 0 {
+                let queued = transaction.queued_ledger.ok_or(MultisigError::NotQueued)?;
+                if env.ledger().sequence() < queued.saturating_add(delay) {
+                    return Err(MultisigError::TimelockNotElapsed);
+                }
             }
 
             transaction.executed = true;
@@ -727,12 +1091,61 @@ mod contract {
             bump_transaction(env, tx_id);
             events::transaction_executed(env, tx_id);
 
+            set_lock(env, true);
             let result: Val =
                 env.invoke_contract(&transaction.target, &transaction.function, transaction.args);
+            set_lock(env, false);
             Ok(result)
         }
 
         // ── Internal helpers ──────────────────────────────────────────────────
+
+        #[inline]
+        fn threshold(env: &Env) -> Result<u32, MultisigError> {
+            env.storage()
+                .instance()
+                .get(&DataKey::Threshold)
+                .ok_or(MultisigError::NotInitialized)
+        }
+
+        /// Reject proposals that are executed, cancelled or expired.
+        #[inline]
+        fn require_open(env: &Env, transaction: &Transaction) -> Result<(), MultisigError> {
+            if transaction.executed {
+                return Err(MultisigError::AlreadyExecuted);
+            }
+            if transaction.cancelled {
+                return Err(MultisigError::TransactionCancelled);
+            }
+            if env.ledger().sequence() > transaction.expiry_ledger {
+                return Err(MultisigError::ProposalExpired);
+            }
+            Ok(())
+        }
+
+        /// Mark `transaction` as queued at the current ledger and emit the
+        /// `queued` event. Returns the first ledger at which it is executable.
+        fn queue(env: &Env, transaction: &mut Transaction) -> u32 {
+            let now = env.ledger().sequence();
+            transaction.queued_ledger = Some(now);
+            let executable_at = now.saturating_add(timelock_delay(env));
+            events::transaction_queued(env, transaction.id, executable_at);
+            executable_at
+        }
+
+        /// Current spending window `(start, spent)`, rolled over when the
+        /// window has elapsed.
+        fn current_window(env: &Env) -> (u32, i128) {
+            let now = env.ledger().sequence();
+            let window: Option<(u32, i128)> =
+                env.storage().instance().get(&DataKey::SpendingWindow);
+            match window {
+                Some((start, spent)) if now < start.saturating_add(SPENDING_WINDOW_LEDGERS) => {
+                    (start, spent)
+                }
+                _ => (now, 0),
+            }
+        }
 
         #[inline]
         fn signer_weight_internal(env: &Env, signer: &Address) -> u32 {
