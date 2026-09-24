@@ -240,11 +240,18 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
 | `initialize` | `env: Env, signers: Vec<Address>, threshold: u32, weights: Option<Vec<SignerWeight>>` | `Result<(), MultisigError>` | `AlreadyInitialized`, `InvalidThreshold`, `InvalidSigners`, `InvalidWeight` |
-| `add_signer` | `env: Env, approvals: Vec<Address>, signer: Address, new_threshold: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners` |
+| `add_signer` | `env: Env, approvals: Vec<Address>, signer: Address, weight: u32, new_threshold: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners`, `InvalidWeight` |
 | `remove_signer` | `env: Env, approvals: Vec<Address>, signer: Address, new_threshold: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners` |
+| `update_signer_weight` | `env: Env, approvals: Vec<Address>, signer: Address, new_weight: u32` | `Result<(), MultisigError>` | `NotInitialized`, `NotSigner`, `InsufficientApprovals`, `InvalidThreshold`, `InvalidSigners`, `InvalidWeight` |
+| `propose_signer_change` | `env: Env, proposer: Address, change: SignerChange, expiry_ledgers: u32` | `Result<u64, MultisigError>` | `NotSigner`, `NotInitialized` |
+| `sign_signer_change` | `env: Env, signer: Address, proposal_id: u64` | `Result<(), MultisigError>` | `NotSigner`, `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `AlreadySigned` |
+| `execute_signer_change` | `env: Env, proposal_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `NotInitialized`, `ThresholdNotMet`, plus any error from the applied change |
+| `get_signer_proposal` | `env: Env, proposal_id: u64` | `Option<SignerProposal>` | None |
 | `propose_transaction` | `env: Env, proposer: Address, target: Address, function: Symbol, args: Vec<Val>, expiry_ledgers: u32` | `Result<u64, MultisigError>` | `NotSigner`, `NotInitialized` |
 | `sign_transaction` | `env: Env, signer: Address, tx_id: u64` | `Result<(), MultisigError>` | `NotSigner`, `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `AlreadySigned` |
 | `execute_transaction` | `env: Env, tx_id: u64` | `Result<Val, MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `ProposalExpired`, `NotInitialized`, `ThresholdNotMet` |
+| `cancel_proposal` | `env: Env, proposer: Address, tx_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `NotProposer`, `AlreadyExecuted` |
+| `revoke_signature` | `env: Env, signer: Address, tx_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `NotSigned` |
 | `execute_batch` | `env: Env, proposal_ids: Vec<u64>` | `Vec<u64>` | None |
 | `get_signers` | `env: Env` | `Vec<Address>` | None |
 | `get_threshold` | `env: Env` | `Option<u32>` | None |
@@ -255,7 +262,7 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 | `cleanup_expired` | `env: Env, tx_id: u64` | `Result<(), MultisigError>` | `TransactionNotFound`, `AlreadyExecuted`, `NotYetExpired` |
 | `contract_version` | `env: Env` | `u32` | None |
 
-`initialize`'s optional `weights` parameter assigns each signer a custom vote weight (any signer omitted from `weights` defaults to weight 1); `threshold` is then measured in accumulated weight rather than raw signer count, so unweighted wallets behave exactly like the original flat-count design. `execute_batch` attempts each proposal ID independently — a failure for one (not found, already executed, expired, or under threshold) is silently skipped rather than aborting the batch; diff the returned `Vec<u64>` against the input to see what ran, or inspect individual proposals via `get_transaction`. Every proposal expires `expiry_ledgers` after `propose_transaction`; `cleanup_expired` lets anyone reclaim storage for an expired, unexecuted proposal.
+`initialize`'s optional `weights` parameter assigns each signer a custom vote weight (any signer omitted from `weights` defaults to weight 1); `threshold` is then measured in accumulated weight rather than raw signer count, so unweighted wallets behave exactly like the original flat-count design. `execute_batch` attempts each proposal ID independently — a failure for one (not found, already executed, expired, or under threshold) is silently skipped rather than aborting the batch; diff the returned `Vec<u64>` against the input to see what ran, or inspect individual proposals via `get_transaction`. Every proposal expires `expiry_ledgers` after `propose_transaction`; `cleanup_expired` lets anyone reclaim storage for an expired, unexecuted proposal. Before execution the original proposer may `cancel_proposal` (removing it from storage), and any signer may `revoke_signature`, which recomputes `accumulated_weight` from the remaining signatures using current weights. `add_signer` takes a custom `weight` (≥ 1), and `update_signer_weight` changes an existing signer's weight while revalidating the current threshold against the new total weight. Signer additions, removals, weight updates, and threshold changes can also be approved asynchronously: `propose_signer_change` stores a `SignerChange` (`AddSigner`, `RemoveSigner`, `UpdateSignerWeight`, `ChangeThreshold`) that signers approve over time with `sign_signer_change`; `execute_signer_change` applies it once accumulated weight meets the threshold.
 
 **Errors:**
 - `AlreadyInitialized` (1) — `initialize` called twice
@@ -271,6 +278,8 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 - `ProposalExpired` (11) — Proposal is past its `expiry_ledger`
 - `InvalidWeight` (12) — A `SignerWeight.weight` of zero was supplied
 - `NotYetExpired` (13) — `cleanup_expired` called before the proposal's expiry ledger was reached
+- `NotProposer` (14) — `cancel_proposal` called by someone other than the original proposer
+- `NotSigned` (15) — `revoke_signature` called by a signer who has not signed the transaction
 
 ---
 
@@ -307,15 +316,39 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
-| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline` |
+| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32, cancellation_grace_ledgers: u32, cancellation_fee: i128` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline` |
 | `bid` | `env: Env, bidder: Address, amount: i128` | `Result<(), AuctionError>` | `InvalidAmount`, `AuctionEnded`, `NotInitialized`, `BidTooLow` |
-| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced` |
+| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced`, `InvalidAmount` |
 | `end` | `env: Env` | `Result<(), AuctionError>` | `NotInitialized`, `AuctionNotEnded`, `AlreadyEnded` |
+| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32, nft_contract: Option<Address>, token_id: Option<u32>` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline`, `InvalidNftParams` |
+| `start_dutch` | `env: Env, seller: Address, token: Address, start_price: i128, floor_price: i128, start_ledger: u32, duration_ledgers: u32, nft_contract: Option<Address>, token_id: Option<u32>` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline`, `Overflow`, `InvalidNftParams` |
+| `bid` | `env: Env, bidder: Address, amount: i128` | `Result<(), AuctionError>` | `InvalidAmount`, `WrongMode`, `AuctionEnded`, `NotInitialized`, `BidTooLow`, `Overflow` |
+| `bid_with_credit` | `env: Env, bidder: Address, total_bid: i128` | `Result<(), AuctionError>` | Same as `bid` |
+| `get_current_price` | `env: Env` | `Result<i128, AuctionError>` | `NotInitialized`, `WrongMode` |
+| `buy` | `env: Env, buyer: Address, max_price: i128` | `Result<i128, AuctionError>` (price paid) | `NotInitialized`, `WrongMode`, `AuctionEnded`, `AuctionNotStarted`, `BidTooLow` |
+| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced` |
+| `end` | `env: Env` | `Result<(), AuctionError>` | `NotInitialized`, `WrongMode`, `AuctionNotEnded`, `AlreadyEnded` |
 | `withdraw` | `env: Env, bidder: Address` | `Result<(), AuctionError>` | `NothingToWithdraw` |
 | `get_pending` | `env: Env, bidder: Address` | `i128` | None |
+| `get_dutch_config` | `env: Env` | `Option<DutchConfig>` | None |
 | `get_info` | `env: Env` | `Result<AuctionInfo, AuctionError>` | `NotInitialized` |
+| `is_cancelled` | `env: Env` | `bool` | None |
 
-`bid` extends `deadline` by `extension_window` ledgers when a bid lands within that window of the current deadline (anti-sniping). `end` settles to the seller when `highest_bid >= reserve_price` (or no reserve is set); otherwise it refunds the highest bidder and the item goes unsold. `cancel` only succeeds before the first bid is placed.
+`bid` extends `deadline` by `extension_window` ledgers when a bid lands within that window of the current deadline (anti-sniping). `end` settles to the seller when `highest_bid >= reserve_price` (or no reserve is set); otherwise it refunds the highest bidder and the item goes unsold. `cancel` always succeeds before the first bid is placed. After a bid, it only succeeds inside the cancellation grace window (`current_ledger <= start_ledger + cancellation_grace_ledgers`, disabled when `cancellation_grace_ledgers` is `0`): the seller pays `cancellation_fee` into the contract, the top bidder's pending refund is credited with their full bid plus the fee, and a `cancelled_with_compensation` event carrying `AuctionCancelledWithCompensation { seller, top_bidder, compensation_amount }` is emitted. A cancelled auction cannot be settled with `end`.
+
+**Checked arithmetic (#1070):** the minimum-bid computation (`highest_bid + min_increment`), refund queueing (`pending + highest_bid`), credit offsets, and Dutch price decay all use checked operations and return `Overflow` rather than trapping.
+
+**Custodial NFT escrow (#1069):** when `nft_contract` and `token_id` are both supplied, `start`/`start_dutch` transfer the NFT from the seller into the auction contract (the seller's authorization of `start` covers the nested NFT `transfer`). The NFT is delivered to the winner in the same `end`/`buy` invocation that pays the seller, and returned to the seller on `cancel`, on `end` with no bids, or when the reserve is not met. The NFT contract must expose `transfer(from: Address, to: Address, token_id: u32)`, as `contracts/nft` does.
+
+**Refund-credit counter-bids (#1068):** `bid_with_credit` applies the bidder's `Pending(bidder)` balance toward `total_bid` and transfers only `total_bid - credit` from their wallet (nothing when the credit covers the bid). Unused credit stays pending and withdrawable. The current highest bidder may also use it to raise their own bid, paying only the increase.
+
+**Dutch auctions (#1071):** `start_dutch` requires `0 <= floor_price < start_price`, `duration_ledgers > 0`, and a `start_ledger` at or after the current ledger. The price is
+
+```text
+price = start_price - (start_price - floor_price) * (now - start_ledger) / duration_ledgers
+```
+
+equal to `start_price` before `start_ledger` and clamped to `floor_price` from `start_ledger + duration_ledgers` onwards. `buy` succeeds for the first caller with `max_price >= get_current_price()`: the auction is marked settled before any external call, the price goes directly from buyer to seller, and the NFT (if any) goes to the buyer. English-only calls (`bid`, `bid_with_credit`, `end`) return `WrongMode` on a Dutch auction, and vice versa.
 
 **Errors:**
 - `AlreadyInitialized` (1) — `start` called twice
@@ -323,14 +356,19 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 - `AuctionEnded` (3) — Deadline passed or auction cancelled
 - `AuctionNotEnded` (4) — `end` called before the deadline
 - `BidTooLow` (5) — Bid below the required minimum
-- `AlreadyEnded` (6) — Already settled
+- `AlreadyEnded` (6) — Already settled or cancelled
 - `NoBids` (7) — Reserved; `end()` handles the no-bids case via an event, not this error
 - `NotAuthorized` (8) — Caller is not the seller
-- `InvalidAmount` (9) — `start_price`/`min_increment`/bid <= 0
+- `InvalidAmount` (9) — `start_price`/`min_increment`/bid <= 0, or `cancellation_fee` < 0
 - `InvalidDeadline` (10) — `deadline` not in the future
 - `NothingToWithdraw` (11) — No pending refund
 - `ReserveNotMet` (12) — Reserved; `end()` handles this case via an event, not this error
+- `BidAlreadyPlaced` (13) — `cancel` called after a bid was placed, outside the cancellation grace window
 - `BidAlreadyPlaced` (13) — `cancel` called after a bid was placed
+- `Overflow` (14) — Checked arithmetic on a bid, refund, credit, or Dutch price overflowed
+- `WrongMode` (15) — English-only call on a Dutch auction, or vice versa
+- `AuctionNotStarted` (16) — `buy` before the Dutch `start_ledger`
+- `InvalidNftParams` (17) — Only one of `nft_contract` / `token_id` supplied
 
 ---
 
@@ -444,8 +482,9 @@ Linear curve: `price = reserve / (supply + 1)` (scaled by `PRICE_SCALE`). `buy` 
 | `proposer_cancel_proposal` | `env: Env, proposer: Address, proposal_id: u32` | `Result<(), DaoError>` | `NotInitialized`, `ProposalNotFound`, `NotAuthorized`, `InvalidState`, `VotesAlreadyCast` |
 | `get_proposal` | `env: Env, proposal_id: u32` | `Result<Proposal, DaoError>` | `ProposalNotFound` |
 | `proposal_count` | `env: Env` | `u32` | None |
+| `get_proposals` | `env: Env, cursor: u32, limit: u32, state: Option<ProposalState>` | `ProposalPage` | None |
 
-Voting weight is the voter's token balance at vote time, capped at the total supply snapshot taken at proposal creation (flash-loan resistant). `execute_proposal` requires both the absolute `quorum` and, if `quorum_bps > 0`, that participation reach `quorum_bps` of the snapshotted total supply, plus `yes_votes > no_votes`.
+Voting weight is the voter's token balance at vote time, capped at the total supply snapshot taken at proposal creation (flash-loan resistant). `execute_proposal` requires both the absolute `quorum` and, if `quorum_bps > 0`, that participation reach `quorum_bps` of the snapshotted total supply, plus `yes_votes > no_votes`. `get_proposals` lists proposals in ascending ID order via `soroban_common::paginate`, optionally filtered by `ProposalState`; `limit` is clamped to `[1, MAX_PAGE_SIZE]` (50), and the returned `next_cursor` is `None` once the end is reached.
 
 **Errors:**
 - `NotAuthorized` (1) — Caller not admin/original proposer
@@ -507,27 +546,53 @@ Commit-reveal randomness: `commit` locks in `hash(secret ++ salt)` and a reveal 
 
 **Location:** `contracts/marketplace/src/lib.rs`
 
-> **Known issue:** `lib.rs` currently contains corrupted/duplicated code — two
-> conflicting `get_active_listings` definitions (one of which is actually the
-> body of an offer-accept flow), references to error variants and a `NftClient`
-> type that don't exist anywhere in the crate, and no function that actually
-> creates an `Offer` (despite `cancel_offer` and offer-acceptance logic, and an
-> `Offer` storage key, existing). The table below documents only the coherent,
-> internally-consistent subset of the file, using the canonical error names
-> from `errors.rs`. Treat this section as a known-incomplete placeholder until
-> the contract code itself is fixed in a separate PR — see the note in
-> `error-reference.md`'s Marketplace section.
+Each listing carries its own `payment_token`; purchases, offers and royalties on
+that listing all settle in that token. The admin may optionally enforce a
+payment-token whitelist on new listings (off by default; the default token
+passed to `initialize` is always whitelisted). Batch entry points accept at most
+`MAX_BATCH_SIZE` (20) items and are all-or-nothing.
 
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
 | `initialize` | `env: Env, admin: Address, payment_token: Address, royalty_bps: u32, royalty_recipient: Address` | `Result<(), MarketplaceError>` | `AlreadyInitialized`, `InvalidRoyalty` |
+| `set_payment_token_allowed` | `env: Env, token: Address, allowed: bool` (admin) | `Result<(), MarketplaceError>` | `NotInitialized` |
+| `set_whitelist_enabled` | `env: Env, enabled: bool` (admin) | `Result<(), MarketplaceError>` | `NotInitialized` |
+| `is_whitelist_enabled` | `env: Env` | `bool` | None |
+| `is_payment_token_allowed` | `env: Env, token: Address` | `bool` | None |
+| `get_default_payment_token` | `env: Env` | `Option<Address>` | None |
+| `list` | `env: Env, seller: Address, nft_contract: Address, token_id: u32, price: i128, payment_token: Address` | `Result<u64, MarketplaceError>` | `NotInitialized`, `InvalidPrice`, `PaymentTokenNotAllowed` |
+| `list_with_expiry` | `env: Env, seller: Address, nft_contract: Address, token_id: u32, price: i128, payment_token: Address, expires_at: u32` | `Result<u64, MarketplaceError>` | `NotInitialized`, `InvalidPrice`, `InvalidExpiry`, `PaymentTokenNotAllowed` |
+| `list_batch` | `env: Env, seller: Address, items: Vec<ListingParams>` | `Result<Vec<u64>, MarketplaceError>` | `EmptyBatch`, `BatchTooLarge`, + `list_with_expiry` errors |
+| `buy` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `ListingExpired`, `SellerNotOwner` |
+| `buy_batch` | `env: Env, buyer: Address, listing_ids: Vec<u64>` | `Result<(), MarketplaceError>` | `EmptyBatch`, `BatchTooLarge`, + `buy` errors |
+| `cancel` | `env: Env, seller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive` |
+| `cancel_batch` | `env: Env, seller: Address, listing_ids: Vec<u64>` | `Result<(), MarketplaceError>` | `EmptyBatch`, `BatchTooLarge`, + `cancel` errors |
+| `sweep_expired` | `env: Env, seller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive`, `ListingNotExpired` |
+| `invalidate_listing` | `env: Env, listing_id: u64` (permissionless) | `Result<bool, MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive` |
+| `make_offer` | `env: Env, buyer: Address, listing_id: u64, amount: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `InvalidOfferAmount` |
+| `accept_offer` | `env: Env, seller: Address, listing_id: u64, buyer: Address` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `NotAuthorized`, `OfferNotFound`, `SellerNotOwner` |
+| `cancel_offer` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `OfferNotFound` |
+| `sweep_offers` | `env: Env, listing_id: u64, buyers: Vec<Address>` (permissionless) | `Result<u32, MarketplaceError>` | `NotInitialized`, `EmptyBatch`, `BatchTooLarge`, `ListingNotFound`, `ListingStillActive` |
+| `get_listing` | `env: Env, listing_id: u64` | `Option<Listing>` | None |
+| `get_offer` | `env: Env, listing_id: u64, buyer: Address` | `Option<i128>` | None |
+| `get_active_listings` | `env: Env, cursor: u64, limit: u32` | `ListingPage` (ghost listings filtered out) | None |
 | `list` | `env: Env, seller: Address, token_id: u32, price: i128` | `Result<u64, MarketplaceError>` | `NotInitialized`, `NotAuthorized` |
-| `buy` | `env: Env, buyer: Address, listing_id: u64, payment_amount: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `InvalidPrice` |
+| `buy` | `env: Env, buyer: Address, listing_id: u64, max_price: i128` | `Result<(), MarketplaceError>` | `NotInitialized`, `ListingNotFound`, `ListingInactive`, `ListingExpired`, `PriceExceedsMax` |
 | `cancel` | `env: Env, caller: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `ListingNotFound`, `ListingInactive` |
 | `cancel_offer` | `env: Env, buyer: Address, listing_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `OfferNotFound` |
 | `get_listing` | `env: Env, listing_id: u64` | `Option<Listing>` | None |
 | `get_offer` | `env: Env, listing_id: u64, buyer: Address` | `Option<i128>` | None |
 | `get_active_listings` | `env: Env, cursor: u64, limit: u32` | `ListingPage` | None |
+| `make_collection_offer` | `env: Env, buyer: Address, nft_contract: Address, amount: i128, expires_at: u32` | `Result<u64, MarketplaceError>` | `NotInitialized`, `InvalidOfferAmount`, `InvalidExpiry` |
+| `accept_collection_offer` | `env: Env, seller: Address, offer_id: u64, token_id: u32` | `Result<(), MarketplaceError>` | `NotInitialized`, `CollectionOfferNotFound`, `CollectionOfferExpired`, `NotAuthorized` |
+| `cancel_collection_offer` | `env: Env, buyer: Address, offer_id: u64` | `Result<(), MarketplaceError>` | `NotInitialized`, `CollectionOfferNotFound`, `NotAuthorized` |
+| `get_collection_offer` | `env: Env, offer_id: u64` | `Option<CollectionOffer>` | None |
+| `set_royalty_splits` | `env: Env, admin: Address, splits: Vec<(Address, u32)>` | `Result<(), MarketplaceError>` | `NotInitialized`, `NotAuthorized`, `InvalidRoyalty` |
+| `get_royalty_splits` | `env: Env` | `Vec<(Address, u32)>` | None |
+
+`buy` takes a `max_price` slippage bound: pass the price you observed; the call fails with `PriceExceedsMax` if the listing price is higher when it executes.
+
+`set_royalty_splits` splits the marketplace royalty across up to 10 `(recipient, bps)` entries whose basis points sum to the total royalty (≤ 10 000). A royalty returned by the NFT contract's `royalty_info` still takes priority.
 
 **Not currently reachable through a working entry point:** making an offer (an `Offer` is only ever read/cancelled, never created) and accepting an offer (the intended logic exists but is bound to a duplicate, misnamed `get_active_listings` definition rather than its own function).
 
@@ -544,6 +609,12 @@ Commit-reveal randomness: `commit` locks in `hash(secret ++ salt)` and a reveal 
 - `ListingNotExpired` (10) — Sweep called on a non-expired listing
 - `InvalidOfferAmount` (11) — Offer amount invalid or not below price
 - `OfferNotFound` (12) — No offer for `(listing_id, buyer)`
+- `PaymentTokenNotAllowed` (13) — Whitelist enabled and listing token not on it
+- `SellerNotOwner` (14) — Seller no longer owns the listed NFT (ghost listing)
+- `BatchTooLarge` (15) — Batch exceeds `MAX_BATCH_SIZE`
+- `EmptyBatch` (16) — Batch contains no items
+- `ListingStillActive` (17) — `sweep_offers` called on an open listing
+- `Reentrant` (18) — Reentrancy guard already held
 
 ---
 
@@ -650,32 +721,24 @@ The subscriber must pre-approve this contract as a token spender (`token.approve
 
 **Location:** `contracts/swap/src/lib.rs`
 
-> **Known issue:** `lib.rs` currently contains corrupted/duplicated code — both
-> `set_fee_bps` and `get_fee_bps` are defined twice in the same `impl` block,
-> and some branches reference states/errors (`SwapState::Pending`/`Accepted`,
-> `SwapError::SwapNotPending`/`SwapExpired`) that don't exist in `storage.rs`
-> / `errors.rs` (which define `SwapState::Open`/`Completed`/`Cancelled` and
-> `SwapError::InvalidState`/`DeadlineExpired`). The table below documents the
-> coherent, internally-consistent subset of the file using the canonical
-> names from `errors.rs`/`storage.rs`. Treat this section as a
-> known-incomplete placeholder until the contract code itself is fixed in a
-> separate PR — see the note in `error-reference.md`'s Swap section.
-
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
-| `initialize` | `env: Env, admin: Address, fee_bps: u32` | `Result<(), SwapError>` | `AlreadyInitialized`, `InvalidFee` |
+| `initialize` | `env: Env, admin: Address, treasury: Address, fee_bps: u32` | `Result<(), SwapError>` | `AlreadyInitialized`, `InvalidFee` |
 | `set_treasury` | `env: Env, new_treasury: Address` | `Result<(), SwapError>` | `NotInitialized`, `NotAuthorized` |
 | `set_fee_bps` | `env: Env, new_fee_bps: u32` | `Result<(), SwapError>` | `NotInitialized`, `NotAuthorized`, `InvalidFee` |
 | `set_admin` | `env: Env, new_admin: Address` | `Result<(), SwapError>` | `NotInitialized`, `NotAuthorized` |
 | `get_admin` | `env: Env` | `Result<Address, SwapError>` | `NotInitialized` |
 | `get_treasury` | `env: Env` | `Result<Address, SwapError>` | `NotInitialized` |
 | `get_fee_bps` | `env: Env` | `Result<u32, SwapError>` | `NotInitialized` |
+| `swap_count` | `env: Env` | `Result<u32, SwapError>` | `NotInitialized` |
 | `propose_swap` | `env: Env, party_a: Address, token_a: Address, amount_a: i128, token_b: Address, amount_b: i128, expires_at: u32` | `Result<u32, SwapError>` | `NotInitialized`, `InvalidDeadline` |
 | `accept_swap` | `env: Env, swap_id: u32, party_b: Address` | `Result<u32, SwapError>` | `NotInitialized`, `SwapNotFound`, `InvalidState`, `DeadlineExpired` |
 | `cancel_swap` | `env: Env, swap_id: u32` | `Result<(), SwapError>` | `SwapNotFound`, `InvalidState`, `NotAuthorized` |
 | `get_swap` | `env: Env, swap_id: u32` | `Result<SwapInfo, SwapError>` | `SwapNotFound` |
 
-`accept_swap` deducts a `fee_bps` fee (paid to the admin) from `token_b`'s transfer to party A, then executes both legs of the swap atomically.
+`propose_swap` escrows `token_a` and writes the complete `SwapInfo` under the persistent composite key `DataKey::Swap(swap_id)`. The instance entry contains only configuration and the monotonic counter; every mutation and read of a swap bumps that swap's persistent TTL.
+
+`accept_swap` deducts a `fee_bps` fee (paid to the configured treasury) from `token_b`'s transfer to party A, then executes both legs of the swap atomically. `cancel_swap` returns the escrowed `token_a` to party A.
 
 **Errors:**
 - `NotAuthorized` (1) — Caller not permitted

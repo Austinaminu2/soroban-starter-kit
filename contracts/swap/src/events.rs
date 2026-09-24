@@ -19,6 +19,7 @@ pub fn swap_proposed(
     token_b: &Address,
     amount_b: i128,
     expires_at: u32,
+    allowed_counterparty: &Option<Address>,
 ) {
     env.events().publish(
         (Symbol::new(env, "proposed"), party_a.clone()),
@@ -29,6 +30,7 @@ pub fn swap_proposed(
             token_b.clone(),
             amount_b,
             expires_at,
+            allowed_counterparty.clone(),
         ),
     );
 }
