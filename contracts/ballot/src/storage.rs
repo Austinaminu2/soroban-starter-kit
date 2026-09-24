@@ -20,6 +20,8 @@ pub enum DataKey {
     VotingEnd,
     /// Running count of total votes cast; used to gate `deregister_voter`.
     TotalVotes,
+    /// Minimum voter turnout required before results can be certified (#1126).
+    Quorum,
     // ── multi-choice additions (#788) ──────────────────────────────────────
     /// Ordered list of choice labels set at `initialize`.
     Choices,

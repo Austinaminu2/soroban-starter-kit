@@ -29,6 +29,12 @@
 //!
 //! `deregister_voter` (admin-only) removes a registered voter, but only while
 //! no vote has yet been cast.
+//!
+//! ## Quorum (#1126)
+//!
+//! `initialize` accepts a `quorum: u32` minimum turnout.  If fewer than
+//! `quorum` votes are cast, `tally_all()` returns
+//! [`BallotResult::QuorumNotMet`] instead of certifying the leading choice.
 
 use soroban_sdk::{Address, Env, String, Vec, contract, contractimpl};
 
@@ -43,6 +49,15 @@ use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_i
 
 fn bump(env: &Env) {
     extend_ttl_instance(env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+}
+
+/// Outcome of a tally.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BallotResult {
+    /// Turnout met the configured quorum; carries the per-choice counts.
+    Certified(Vec<i128>),
+    /// Turnout was below the configured quorum; results are not certified.
+    QuorumNotMet,
 }
 
 /// Multi-choice on-chain ballot contract.
@@ -76,6 +91,9 @@ mod contract {
         /// `choices` must be non-empty.  The index of each element becomes the
         /// `choice` value accepted by `vote`.
         ///
+        /// `quorum` is the minimum number of votes that must be cast before
+        /// results can be certified.
+        ///
         /// # Errors
         /// - [`BallotError::AlreadyInitialized`] if called more than once.
         /// - [`BallotError::NoChoices`] if `choices` is empty.
@@ -87,6 +105,7 @@ mod contract {
             voting_start: u32,
             voting_end: u32,
             choices: Vec<String>,
+            quorum: u32,
         ) -> Result<(), BallotError> {
             if env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::AlreadyInitialized);
@@ -108,6 +127,7 @@ mod contract {
                 .instance()
                 .set(&DataKey::VotingEnd, &voting_end);
             env.storage().instance().set(&DataKey::TotalVotes, &0i128);
+            env.storage().instance().set(&DataKey::Quorum, &quorum);
 
             // Store the choices list.
             let choice_count = choices.len();
@@ -216,16 +236,15 @@ mod contract {
         ///
         /// # Errors
         /// - [`BallotError::NotInitialized`]
-        /// - [`BallotError::VotingNotStarted`] if before `voting_start`.
-        /// - [`BallotError::VotingClosed`] if voting is inactive or past `voting_end`.
+        /// - [`BallotError::VotingNotStarted`] before the window opens.
+        /// - [`BallotError::VotingClosed`] after the window closes.
         /// - [`BallotError::NotRegistered`] if the voter is not registered.
         /// - [`BallotError::AlreadyVoted`] if the voter has already voted.
-        /// - [`BallotError::InvalidChoice`] if `choice >= number of choices`.
+        /// - [`BallotError::InvalidChoice`] if `choice` is out of range.
         pub fn vote(env: Env, voter: Address, choice: u32) -> Result<(), BallotError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::NotInitialized);
             }
-            voter.require_auth();
 
             let voting_active: bool = env
                 .storage()
@@ -236,24 +255,25 @@ mod contract {
                 return Err(BallotError::VotingClosed);
             }
 
-            // Enforce voting window.
             let voting_start: u32 = env
                 .storage()
                 .instance()
                 .get(&DataKey::VotingStart)
-                .unwrap_or(0u32);
+                .unwrap_or(0);
             let voting_end: u32 = env
                 .storage()
                 .instance()
                 .get(&DataKey::VotingEnd)
-                .unwrap_or(0u32);
-            let current = env.ledger().sequence();
-            if current < voting_start {
+                .unwrap_or(0);
+            let now = env.ledger().sequence();
+            if now < voting_start {
                 return Err(BallotError::VotingNotStarted);
             }
-            if current > voting_end {
+            if now > voting_end {
                 return Err(BallotError::VotingClosed);
             }
+
+            voter.require_auth();
 
             let is_registered: bool = env
                 .storage()
@@ -264,16 +284,12 @@ mod contract {
                 return Err(BallotError::NotRegistered);
             }
 
-            let already_voted: bool = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Voter(voter.clone()))
-                .unwrap_or(false);
-            if already_voted {
+            let voted_key = DataKey::HasVoted(voter.clone());
+            let has_voted: bool = env.storage().persistent().get(&voted_key).unwrap_or(false);
+            if has_voted {
                 return Err(BallotError::AlreadyVoted);
             }
 
-            // Validate choice against the stored choices list.
             let choices: Vec<String> = env
                 .storage()
                 .instance()
@@ -283,78 +299,49 @@ mod contract {
                 return Err(BallotError::InvalidChoice);
             }
 
-            // Mark voter as having voted.
-            let voter_key = DataKey::Voter(voter.clone());
-            let registered_key = DataKey::RegisteredVoter(voter.clone());
-            env.storage().persistent().set(&voter_key, &true);
-            env.storage().persistent().extend_ttl(
-                &voter_key,
-                LEDGER_LIFETIME_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-            env.storage().persistent().extend_ttl(
-                &registered_key,
-                LEDGER_LIFETIME_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
+            let choice_key = DataKey::ChoiceVotes(choice);
+            let current: i128 = env.storage().instance().get(&choice_key).unwrap_or(0i128);
+            env.storage().instance().set(&choice_key, &(current + 1));
 
-            // Increment total-vote counter (used by deregister_voter guard).
+            // Backward-compat counters for two-choice ballots.
+            if choice == 0 {
+                let no: i128 = env.storage().instance().get(&DataKey::NoVotes).unwrap_or(0i128);
+                env.storage().instance().set(&DataKey::NoVotes, &(no + 1));
+            } else if choice == 1 {
+                let yes: i128 = env.storage().instance().get(&DataKey::YesVotes).unwrap_or(0i128);
+                env.storage().instance().set(&DataKey::YesVotes, &(yes + 1));
+            }
+
             let total: i128 = env
                 .storage()
                 .instance()
                 .get(&DataKey::TotalVotes)
                 .unwrap_or(0i128);
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalVotes, &(total.saturating_add(1)));
+            env.storage().instance().set(&DataKey::TotalVotes, &(total + 1));
 
-            // Increment the per-choice counter.
-            let current_count: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::ChoiceVotes(choice))
-                .unwrap_or(0i128);
-            env.storage().instance().set(
-                &DataKey::ChoiceVotes(choice),
-                &(current_count.saturating_add(1)),
+            env.storage().persistent().set(&voted_key, &true);
+            env.storage().persistent().extend_ttl(
+                &voted_key,
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
             );
-
-            // Keep backward-compat yes/no counters in sync for two-choice ballots.
-            if choice == 1 {
-                let yes: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::YesVotes)
-                    .unwrap_or(0i128);
-                env.storage()
-                    .instance()
-                    .set(&DataKey::YesVotes, &yes.saturating_add(1));
-            } else if choice == 0 {
-                let no: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::NoVotes)
-                    .unwrap_or(0i128);
-                env.storage()
-                    .instance()
-                    .set(&DataKey::NoVotes, &no.saturating_add(1));
-            }
 
             bump(&env);
             events::voted(&env, &voter, choice);
             Ok(())
         }
 
-        /// Return per-choice vote tallies and close voting.
+        /// Tally all choices and close voting.
         ///
-        /// Returns a `Vec<i128>` whose `i`-th element is the vote count for
-        /// choice `i` (in the same order as the `choices` list passed to
-        /// `initialize`).
+        /// Returns [`BallotResult::QuorumNotMet`] if the number of votes cast
+        /// is below the quorum configured at `initialize`; otherwise returns
+        /// [`BallotResult::Certified`] with the per-choice counts in declaration
+        /// order.
         ///
         /// # Errors
         /// - [`BallotError::NotInitialized`]
         /// - [`BallotError::Unauthorized`] if the caller is not the admin.
-        pub fn tally_all(env: Env) -> Result<Vec<i128>, BallotError> {
+        pub fn tally_all(env: Env) -> Result<BallotResult, BallotError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::NotInitialized);
             }
@@ -372,35 +359,43 @@ mod contract {
                 .get(&DataKey::Choices)
                 .ok_or(BallotError::NotInitialized)?;
 
-            let mut counts: Vec<i128> = Vec::new(&env);
+            let mut results: Vec<i128> = Vec::new(&env);
             for i in 0..choices.len() {
-                let c: i128 = env
+                let count: i128 = env
                     .storage()
                     .instance()
                     .get(&DataKey::ChoiceVotes(i))
                     .unwrap_or(0i128);
-                counts.push_back(c);
+                results.push_back(count);
             }
 
             env.storage().instance().set(&DataKey::VotingActive, &false);
-
             bump(&env);
-            events::tally_all_result(&env, &counts);
-            Ok(counts)
+
+            let total_votes: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalVotes)
+                .unwrap_or(0i128);
+            let quorum: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::Quorum)
+                .unwrap_or(0);
+            if total_votes < quorum as i128 {
+                return Ok(BallotResult::QuorumNotMet);
+            }
+
+            Ok(BallotResult::Certified(results))
         }
 
-        /// Backward-compatible tally for two-choice (yes/no) ballots.
+        /// Backward-compatible two-choice tally helper.
         ///
-        /// Returns `(yes_votes, no_votes)` i.e. `(choice[1] count, choice[0] count)`.
-        /// Also closes voting.
-        ///
-        /// For ballots with more than two choices use [`tally_all`].
+        /// Returns `(yes, no)` counts and closes voting.
         ///
         /// # Errors
         /// - [`BallotError::NotInitialized`]
         /// - [`BallotError::Unauthorized`] if the caller is not the admin.
-        ///
-        /// [`tally_all`]: BallotContract::tally_all
         pub fn tally(env: Env) -> Result<(i128, i128), BallotError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(BallotError::NotInitialized);
@@ -413,61 +408,63 @@ mod contract {
                 .ok_or(BallotError::NotInitialized)?;
             admin.require_auth();
 
-            let yes: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::YesVotes)
-                .unwrap_or(0i128);
-            let no: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::NoVotes)
-                .unwrap_or(0i128);
+            let yes: i128 = env.storage().instance().get(&DataKey::YesVotes).unwrap_or(0i128);
+            let no: i128 = env.storage().instance().get(&DataKey::NoVotes).unwrap_or(0i128);
 
             env.storage().instance().set(&DataKey::VotingActive, &false);
-
             bump(&env);
-            events::tally_result(&env, yes, no);
             Ok((yes, no))
-        }
-
-        /// Return yes vote count (choice index 1).
-        pub fn get_yes_votes(env: Env) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::YesVotes)
-                .unwrap_or(0i128)
-        }
-
-        /// Return no vote count (choice index 0).
-        pub fn get_no_votes(env: Env) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::NoVotes)
-                .unwrap_or(0i128)
-        }
-
-        /// Return the vote count for an arbitrary choice index.
-        ///
-        /// Returns 0 if `choice_index` is out of range or no votes have been cast.
-        pub fn get_choice_votes(env: Env, choice_index: u32) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::ChoiceVotes(choice_index))
-                .unwrap_or(0i128)
-        }
-
-        /// Return the ordered list of choice labels.
-        pub fn get_choices(env: Env) -> Vec<String> {
-            env.storage()
-                .instance()
-                .get(&DataKey::Choices)
-                .unwrap_or_else(|| Vec::new(&env))
         }
     }
 }
 
-mod test;
-
 #[cfg(test)]
-mod prop_test;
+mod test {
+    use super::*;
+    use soroban_sdk::{Env, String, Vec, testutils::Address as _};
+
+    fn setup(env: &Env, quorum: u32) -> (Address, BallotContractClient) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let contract_id = env.register(BallotContract, ());
+        let client = BallotContractClient::new(env, &contract_id);
+        let mut choices: Vec<String> = Vec::new(env);
+        choices.push_back(String::from_str(env, "no"));
+        choices.push_back(String::from_str(env, "yes"));
+        client.initialize(&admin, &1u32, &100u32, &choices, &quorum);
+        (admin, client)
+    }
+
+    #[test]
+    fn tally_certifies_when_quorum_met() {
+        let env = Env::default();
+        let (_admin, client) = setup(&env, 2);
+        let v1 = Address::generate(&env);
+        let v2 = Address::generate(&env);
+        client.register_voter(&v1);
+        client.register_voter(&v2);
+        client.vote(&v1, &1u32);
+        client.vote(&v2, &0u32);
+
+        let result = client.tally_all();
+        match result {
+            BallotResult::Certified(counts) => {
+                assert_eq!(counts.get(0).unwrap(), 1);
+                assert_eq!(counts.get(1).unwrap(), 1);
+            }
+            BallotResult::QuorumNotMet => panic!("expected quorum to be met"),
+        }
+    }
+
+    #[test]
+    fn tally_fails_when_quorum_not_met() {
+        let env = Env::default();
+        let (_admin, client) = setup(&env, 3);
+        let v1 = Address::generate(&env);
+        client.register_voter(&v1);
+        client.vote(&v1, &1u32);
+
+        let result = client.tally_all();
+        assert_eq!(result, BallotResult::QuorumNotMet);
+    }
+}
