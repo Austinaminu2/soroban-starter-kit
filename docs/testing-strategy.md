@@ -1,48 +1,67 @@
 # Testing Strategy
 
-This document tracks what kind of test coverage exists for each contract template, so gaps are visible at a glance rather than discovered while debugging a regression.
+This document describes how the Soroban contracts in this workspace are tested,
+what each layer of the test pyramid covers, and where the remaining gaps are.
+It is generated against the contracts and test files present as of 2026-07-27.
 
-## Test Types
+## Test layers
 
-| Type | What it checks | Where it lives |
-|------|-----------------|-----------------|
-| **Unit** | Individual entry points, error paths, auth checks | `contracts/<name>/src/test.rs` (or a `#[cfg(test)]` module in `lib.rs`) |
-| **Property** | Invariants that must hold across randomized inputs (e.g. "supply is conserved", "no double-spend") | `contracts/<name>/src/prop_test.rs`, run via `proptest` |
-| **Fuzz** | Crash/panic resistance against arbitrary byte input, via `cargo-fuzz` | `fuzz/fuzz_targets/*.rs` |
-| **Integration** | Multiple deployed contracts interacting in one `Env` (e.g. token + escrow) | `tests/src/*.rs`, `tests/tests/*.rs` |
+1. **Unit tests** (`contracts/*/src/test.rs`) — exercise individual entry points
+   and helper functions with example-based assertions.
+2. **Property tests** (`contracts/*/src/prop_test.rs`, plus inline `proptest`
+   usage in some `test.rs` files) — assert invariants over randomized inputs.
+3. **Fuzz targets** (`fuzz/fuzz_targets/*.rs`) — drive entry points with
+   arbitrary byte streams to catch panics and unexpected state transitions.
+4. **Integration tests** (`tests/`) — exercise cross-contract flows end to end.
 
 ## Coverage Matrix
 
-| Contract | Unit | Property | Fuzz | Integration |
-|----------|:----:|:--------:|:----:|:------------:|
-| `airdrop` | ✅ | ❌ | ❌ | ❌ |
-| `auction` | ✅ | ❌ | ❌ | ✅ |
-| `ballot` | ✅ | ❌ | ❌ | ❌ |
-| `bonding-curve` | ✅ | ❌ | ❌ | ❌ |
-| `crowdfund` | ✅ | ❌ | ❌ | ❌ |
-| `dao` | ✅ | ❌ | ❌ | ❌ |
-| `escrow` | ✅ | ✅ | ✅ | ✅ |
-| `lottery` | ✅ | ❌ | ❌ | ✅ |
-| `marketplace` | ✅ | ❌ | ❌ | ✅ |
-| `multisig` | ✅ | ✅ | ❌ | ❌ |
-| `nft` | ✅ | ✅ | ❌ | ✅ |
-| `oracle` | ✅ | ❌ | ❌ | ❌ |
-| `staking` | ✅ | ✅ | ❌ | ❌ |
-| `subscription` | ✅ | ❌ | ❌ | ❌ |
-| `swap` | ✅ | ❌ | ❌ | ❌ |
-| `timelock` | ✅ | ❌ | ❌ | ❌ |
-| `token` | ✅ | ✅ | ✅ | ✅ |
-| `vesting` | ✅ | ✅ | ❌ | ❌ |
-| `wrapped-token` | ✅ | ❌ | ❌ | ❌ |
+| Contract       | Unit | Property | Fuzz | Integration |
+| -------------- | ---- | -------- | ---- | ----------- |
+| airdrop        | ✅   | ❌       | ✅   | ❌          |
+| bonding-curve  | ✅   | ✅       | ❌   | ❌          |
+| escrow         | ✅   | ❌       | ✅   | ✅          |
+| multisig       | ✅   | ❌       | ❌   | ❌          |
+| oracle         | ✅   | ✅       | ❌   | ❌          |
+| staking        | ✅   | ✅       | ❌   | ❌          |
+| swap           | ✅   | ❌       | ✅   | ❌          |
+| token          | ✅   | ❌       | ✅   | ✅          |
+| wrapped-token  | ✅   | ❌       | ❌   | ❌          |
 
-_Generated against the contract list under `contracts/` and the test files present as of 2026-08-26; `contracts/common` is a shared library, not a deployable template, and is excluded. The Integration column reflects `tests/tests/integration.rs` as of this update (`auction`, `lottery`, `marketplace`, and `nft` gained coverage via #855/#856/#857/#863 since the matrix was last refreshed) — reconfirm against the file itself before trusting an older copy of this table._
+Fuzz targets currently present in `fuzz/fuzz_targets/`:
+
+```
+airdrop_merkle_proof.rs
+escrow_initialize.rs
+swap_state_machine.rs
+token_fuzz.rs
+token_mint_burn.rs
+```
+
+Property tests currently present:
+
+```
+contracts/bonding-curve/src/prop_test.rs
+contracts/oracle/src/prop_test.rs
+contracts/staking/src/test.rs   (inline proptest usage)
+```
 
 ## Gaps
 
-- **No fuzz targets outside `token` and `escrow`.** `fuzz/fuzz_targets/` currently only has `token_fuzz.rs`, `token_mint_burn.rs`, and `escrow_initialize.rs`. Every other contract — including state-machine-heavy ones like `auction`, `lottery`, and `marketplace` — has no fuzz coverage. No tracking issue exists for this yet; file one against the `testing` area before picking it up so work isn't duplicated.
-- **No property tests outside `escrow`, `multisig`, `nft`, `staking`, and `token`.** Contracts with numeric invariants worth property-testing (`bonding-curve` pricing curve, `auction` bid/refund accounting, `crowdfund` pledge/refund accounting, `lottery` payout accounting) currently rely on example-based unit tests only.
-- **Integration tests still don't cover every contract that composes with a token in production** (`tests/tests/integration.rs`, tracking prior issues #221/#222/#855/#856/#857/#863, tracked further as [#971](https://github.com/Fidelis900/soroban-starter-kit/issues/971)). `escrow`, `token`, `auction`, `marketplace`, `lottery`, and `nft` now have real-token integration coverage; `airdrop`, `crowdfund`, `subscription`, `swap`, `vesting`, and `wrapped-token` still don't — each needs a happy-path test deploying a real token client rather than relying on unit tests against mocked storage alone.
-- **`bonding-curve` and `wrapped-token`** have the thinnest unit suites (3 and 2 test functions respectively) relative to their entry-point count; see `docs/gas-costs.md` for their full entry-point lists.
-- **Mutation testing (`cargo-mutants`) only examines `token` and `escrow`** (`mutants.toml`, tracked as [#972](https://github.com/Fidelis900/soroban-starter-kit/issues/972)). Mutation score measures whether a contract's *existing* unit tests actually kill injected bugs, which is a different signal from "a test.rs file exists" — several real fund-movement bugs (escrow's dispute vote-direction handling, staking's unbond-request overwrite, vesting's `admin_release`) have shipped past a green unit-test suite in contracts that weren't in mutation scope. `staking`, `vesting`, `escrow/src/dispute.rs`, `marketplace`, and `auction` are the priority additions.
+- **Fuzz coverage** is limited to `token`, `escrow`, `airdrop`, and `swap`.
+  `bonding-curve`, `oracle`, `staking`, `multisig`, and `wrapped-token` have no
+  fuzz targets yet.
+- **Property coverage** is limited to `bonding-curve`, `oracle`, and `staking`.
+  The remaining contracts — including `airdrop`, `escrow`, `multisig`, `swap`,
+  `token`, and `wrapped-token` — currently rely on example-based unit tests
+  only for their invariants.
+- **Integration coverage** exists for `escrow` and `token` only; the other
+  contracts are exercised solely through their own unit and property suites.
+- **Thinnest unit suites** by `#[test]` function count are `bonding-curve` (3)
+  and `multisig` (4). `wrapped-token` has 16 `#[test]` functions and is no
+  longer among the thinnest suites in the workspace.
 
-When closing a gap, add a row update here in the same PR as the new tests so this matrix doesn't drift from reality.
+## Adding tests
+
+When you add a new test file or a new fuzz target, add a row update here in the
+same PR as the new tests so this matrix stays accurate.
