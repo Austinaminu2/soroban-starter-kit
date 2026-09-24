@@ -20,7 +20,8 @@ pub enum AuctionError {
     NothingToWithdraw = 11,
     /// The auction ended but the highest bid did not meet the reserve price.
     ReserveNotMet = 12,
-    /// `cancel` was called after at least one bid has been placed.
+    /// `cancel` was called after at least one bid has been placed and the
+    /// cancellation grace window is disabled or has elapsed.
     BidAlreadyPlaced = 13,
     /// A checked arithmetic operation on bid, refund, or price values overflowed.
     Overflow = 14,
@@ -46,6 +47,7 @@ impl_display_error!(
     InvalidDeadline    => "invalid deadline",
     NothingToWithdraw  => "nothing to withdraw",
     ReserveNotMet      => "reserve price not met",
+    BidAlreadyPlaced   => "cannot cancel after a bid outside the grace window",
     BidAlreadyPlaced   => "cannot cancel after a bid has been placed",
     Overflow           => "arithmetic overflow",
     WrongMode          => "operation not supported in this auction mode",

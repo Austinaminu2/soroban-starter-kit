@@ -1,4 +1,20 @@
-use soroban_sdk::{Address, Env, Symbol};
+// `#[contracttype]` generates undocumented public associated items.
+#![allow(missing_docs)]
+
+use soroban_sdk::{Address, Env, Symbol, contracttype};
+
+/// Payload of the `cancelled_with_compensation` event, emitted when the seller
+/// cancels inside the grace window after at least one bid has been placed.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionCancelledWithCompensation {
+    /// The seller who cancelled the auction.
+    pub seller: Address,
+    /// The highest bidder at the time of cancellation.
+    pub top_bidder: Address,
+    /// Compensation fee credited to `top_bidder` on top of their bid refund.
+    pub compensation_amount: i128,
+}
 
 pub fn started(env: &Env, seller: &Address, start_price: i128, deadline: u32) {
     env.events().publish(
@@ -52,6 +68,24 @@ pub fn cancelled(env: &Env, seller: &Address) {
         .publish((Symbol::new(env, "cancelled"), seller.clone()), ());
 }
 
+pub fn cancelled_with_compensation(
+    env: &Env,
+    seller: &Address,
+    top_bidder: &Address,
+    compensation_amount: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "cancelled_with_compensation"),
+            seller.clone(),
+        ),
+        AuctionCancelledWithCompensation {
+            seller: seller.clone(),
+            top_bidder: top_bidder.clone(),
+            compensation_amount,
+        },
+    );
+}
 pub fn credit_applied(env: &Env, bidder: &Address, credit_used: i128, transferred: i128) {
     env.events().publish(
         (Symbol::new(env, "credit_applied"), bidder.clone()),
