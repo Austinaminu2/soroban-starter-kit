@@ -476,11 +476,51 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 ### `BidAlreadyPlaced` (code 13)
 
-**Description:** `cancel` was called after at least one bid has already been placed.
+**Description:** `cancel` was called after at least one bid has already been placed, and the cancellation grace window is disabled (`cancellation_grace_ledgers = 0`) or has elapsed.
 
-**Common cause:** The seller attempting to cancel an auction that already has bidding activity.
+**Common cause:** The seller attempting to cancel an auction that already has bidding activity after `start_ledger + cancellation_grace_ledgers`.
 
-**Resolution:** `cancel` is only valid before the first bid; once bidding starts the auction must run to `end()`.
+**Resolution:** Once bidding starts, `cancel` is only valid inside the grace window, and the seller must pay `cancellation_fee` to the top bidder. After the window closes, the auction must run to `end()`.
+
+---
+
+### `Overflow` (code 14)
+
+**Description:** A checked arithmetic operation on a bid, refund, credit, or Dutch price overflowed `i128` (or `start_ledger + duration_ledgers` overflowed `u32`).
+
+**Common cause:** Prices or increments configured near `i128::MAX`, so `highest_bid + min_increment` or a queued refund cannot be represented.
+
+**Resolution:** Use realistic token amounts; the contract returns this error instead of trapping so no state changes are applied.
+
+---
+
+### `WrongMode` (code 15)
+
+**Description:** The call does not apply to this auction's mode.
+
+**Common cause:** Calling `bid`, `bid_with_credit`, or `end` on an auction started with `start_dutch`, or `get_current_price` / `buy` on an English auction.
+
+**Resolution:** Check `get_dutch_config()`: `Some` means Dutch (use `buy`), `None` means English (use `bid` / `end`).
+
+---
+
+### `AuctionNotStarted` (code 16)
+
+**Description:** `buy` was called before the Dutch auction's `start_ledger`.
+
+**Common cause:** Submitting a purchase for a Dutch auction scheduled to open in the future.
+
+**Resolution:** Wait until the current ledger reaches `get_dutch_config().start_ledger`.
+
+---
+
+### `InvalidNftParams` (code 17)
+
+**Description:** Exactly one of `nft_contract` / `token_id` was supplied to `start` or `start_dutch`.
+
+**Common cause:** Passing an NFT contract without a token id, or vice versa.
+
+**Resolution:** Pass both for a custodial NFT auction, or `None` for both.
 
 ---
 

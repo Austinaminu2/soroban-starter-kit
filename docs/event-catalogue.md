@@ -141,6 +141,11 @@ env.events().publish((topic_1, topic_2, ...), data);
 | Bid Withdrawn | `withdrawn` | `(Symbol, Address)` → event name, bidder | `i128` → amount returned | `withdraw()` called by losing bidder |
 | Deadline Extended | `deadline_extended` | `(Symbol,)` → event name | `u32` → new deadline ledger | Anti-snipe window triggered during `bid()` |
 | Cancelled | `cancelled` | `(Symbol, Address)` → event name, seller | `()` | `cancel()` called by seller (no bids placed) |
+| Credit Applied | `credit_applied` | `(Symbol, Address)` → event name, bidder | `(i128, i128)` → credit used, amount transferred | `bid_with_credit()` called |
+| Dutch Started | `dutch_started` | `(Symbol, Address)` → event name, seller | `(i128, i128, u32, u32)` → start price, floor price, start ledger, duration ledgers | `start_dutch()` called |
+| Dutch Bought | `dutch_bought` | `(Symbol, Address)` → event name, buyer | `i128` → price paid | `buy()` settles a Dutch auction |
+| NFT Escrowed | `nft_escrowed` | `(Symbol, Address)` → event name, NFT contract | `u32` → token id | `start()` / `start_dutch()` with a custodial NFT |
+| NFT Released | `nft_released` | `(Symbol, Address)` → event name, recipient | `u32` → token id | NFT delivered to the winner/buyer or returned to the seller |
 
 ---
 

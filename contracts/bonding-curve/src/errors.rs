@@ -13,6 +13,8 @@ pub enum BondingCurveError {
     InvalidAmount = 4,
     InsufficientReserve = 5,
     Overflow = 6,
+    InvalidFee = 7,
+    InvalidConfiguration = 8,
 }
 
 impl_display_error!(
@@ -23,6 +25,8 @@ impl_display_error!(
     InvalidAmount        => "invalid amount",
     InsufficientReserve  => "insufficient reserve",
     Overflow             => "arithmetic overflow",
+    InvalidFee           => "invalid fee",
+    InvalidConfiguration => "invalid curve configuration",
 );
 
 #[cfg(test)]

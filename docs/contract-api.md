@@ -307,15 +307,39 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 
 | Function | Parameters | Returns | Errors |
 |----------|-----------|---------|--------|
-| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline` |
+| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32, cancellation_grace_ledgers: u32, cancellation_fee: i128` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline` |
 | `bid` | `env: Env, bidder: Address, amount: i128` | `Result<(), AuctionError>` | `InvalidAmount`, `AuctionEnded`, `NotInitialized`, `BidTooLow` |
-| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced` |
+| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced`, `InvalidAmount` |
 | `end` | `env: Env` | `Result<(), AuctionError>` | `NotInitialized`, `AuctionNotEnded`, `AlreadyEnded` |
+| `start` | `env: Env, seller: Address, token: Address, start_price: i128, min_increment: i128, deadline: u32, reserve_price: Option<i128>, extension_window: u32, nft_contract: Option<Address>, token_id: Option<u32>` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline`, `InvalidNftParams` |
+| `start_dutch` | `env: Env, seller: Address, token: Address, start_price: i128, floor_price: i128, start_ledger: u32, duration_ledgers: u32, nft_contract: Option<Address>, token_id: Option<u32>` | `Result<(), AuctionError>` | `AlreadyInitialized`, `InvalidAmount`, `InvalidDeadline`, `Overflow`, `InvalidNftParams` |
+| `bid` | `env: Env, bidder: Address, amount: i128` | `Result<(), AuctionError>` | `InvalidAmount`, `WrongMode`, `AuctionEnded`, `NotInitialized`, `BidTooLow`, `Overflow` |
+| `bid_with_credit` | `env: Env, bidder: Address, total_bid: i128` | `Result<(), AuctionError>` | Same as `bid` |
+| `get_current_price` | `env: Env` | `Result<i128, AuctionError>` | `NotInitialized`, `WrongMode` |
+| `buy` | `env: Env, buyer: Address, max_price: i128` | `Result<i128, AuctionError>` (price paid) | `NotInitialized`, `WrongMode`, `AuctionEnded`, `AuctionNotStarted`, `BidTooLow` |
+| `cancel` | `env: Env, seller: Address` | `Result<(), AuctionError>` | `NotInitialized`, `NotAuthorized`, `AlreadyEnded`, `BidAlreadyPlaced` |
+| `end` | `env: Env` | `Result<(), AuctionError>` | `NotInitialized`, `WrongMode`, `AuctionNotEnded`, `AlreadyEnded` |
 | `withdraw` | `env: Env, bidder: Address` | `Result<(), AuctionError>` | `NothingToWithdraw` |
 | `get_pending` | `env: Env, bidder: Address` | `i128` | None |
+| `get_dutch_config` | `env: Env` | `Option<DutchConfig>` | None |
 | `get_info` | `env: Env` | `Result<AuctionInfo, AuctionError>` | `NotInitialized` |
+| `is_cancelled` | `env: Env` | `bool` | None |
 
-`bid` extends `deadline` by `extension_window` ledgers when a bid lands within that window of the current deadline (anti-sniping). `end` settles to the seller when `highest_bid >= reserve_price` (or no reserve is set); otherwise it refunds the highest bidder and the item goes unsold. `cancel` only succeeds before the first bid is placed.
+`bid` extends `deadline` by `extension_window` ledgers when a bid lands within that window of the current deadline (anti-sniping). `end` settles to the seller when `highest_bid >= reserve_price` (or no reserve is set); otherwise it refunds the highest bidder and the item goes unsold. `cancel` always succeeds before the first bid is placed. After a bid, it only succeeds inside the cancellation grace window (`current_ledger <= start_ledger + cancellation_grace_ledgers`, disabled when `cancellation_grace_ledgers` is `0`): the seller pays `cancellation_fee` into the contract, the top bidder's pending refund is credited with their full bid plus the fee, and a `cancelled_with_compensation` event carrying `AuctionCancelledWithCompensation { seller, top_bidder, compensation_amount }` is emitted. A cancelled auction cannot be settled with `end`.
+
+**Checked arithmetic (#1070):** the minimum-bid computation (`highest_bid + min_increment`), refund queueing (`pending + highest_bid`), credit offsets, and Dutch price decay all use checked operations and return `Overflow` rather than trapping.
+
+**Custodial NFT escrow (#1069):** when `nft_contract` and `token_id` are both supplied, `start`/`start_dutch` transfer the NFT from the seller into the auction contract (the seller's authorization of `start` covers the nested NFT `transfer`). The NFT is delivered to the winner in the same `end`/`buy` invocation that pays the seller, and returned to the seller on `cancel`, on `end` with no bids, or when the reserve is not met. The NFT contract must expose `transfer(from: Address, to: Address, token_id: u32)`, as `contracts/nft` does.
+
+**Refund-credit counter-bids (#1068):** `bid_with_credit` applies the bidder's `Pending(bidder)` balance toward `total_bid` and transfers only `total_bid - credit` from their wallet (nothing when the credit covers the bid). Unused credit stays pending and withdrawable. The current highest bidder may also use it to raise their own bid, paying only the increase.
+
+**Dutch auctions (#1071):** `start_dutch` requires `0 <= floor_price < start_price`, `duration_ledgers > 0`, and a `start_ledger` at or after the current ledger. The price is
+
+```text
+price = start_price - (start_price - floor_price) * (now - start_ledger) / duration_ledgers
+```
+
+equal to `start_price` before `start_ledger` and clamped to `floor_price` from `start_ledger + duration_ledgers` onwards. `buy` succeeds for the first caller with `max_price >= get_current_price()`: the auction is marked settled before any external call, the price goes directly from buyer to seller, and the NFT (if any) goes to the buyer. English-only calls (`bid`, `bid_with_credit`, `end`) return `WrongMode` on a Dutch auction, and vice versa.
 
 **Errors:**
 - `AlreadyInitialized` (1) — `start` called twice
@@ -323,14 +347,19 @@ The contract supports **multiple beneficiaries per deployed instance**: `initial
 - `AuctionEnded` (3) — Deadline passed or auction cancelled
 - `AuctionNotEnded` (4) — `end` called before the deadline
 - `BidTooLow` (5) — Bid below the required minimum
-- `AlreadyEnded` (6) — Already settled
+- `AlreadyEnded` (6) — Already settled or cancelled
 - `NoBids` (7) — Reserved; `end()` handles the no-bids case via an event, not this error
 - `NotAuthorized` (8) — Caller is not the seller
-- `InvalidAmount` (9) — `start_price`/`min_increment`/bid <= 0
+- `InvalidAmount` (9) — `start_price`/`min_increment`/bid <= 0, or `cancellation_fee` < 0
 - `InvalidDeadline` (10) — `deadline` not in the future
 - `NothingToWithdraw` (11) — No pending refund
 - `ReserveNotMet` (12) — Reserved; `end()` handles this case via an event, not this error
+- `BidAlreadyPlaced` (13) — `cancel` called after a bid was placed, outside the cancellation grace window
 - `BidAlreadyPlaced` (13) — `cancel` called after a bid was placed
+- `Overflow` (14) — Checked arithmetic on a bid, refund, credit, or Dutch price overflowed
+- `WrongMode` (15) — English-only call on a Dutch auction, or vice versa
+- `AuctionNotStarted` (16) — `buy` before the Dutch `start_ledger`
+- `InvalidNftParams` (17) — Only one of `nft_contract` / `token_id` supplied
 
 ---
 
