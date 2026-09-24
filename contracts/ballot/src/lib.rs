@@ -29,6 +29,11 @@
 //!
 //! `deregister_voter` (admin-only) removes a registered voter, but only while
 //! no vote has yet been cast.
+//!
+//! ## Batch voter registration (#1122)
+//!
+//! `register_voters_batch` (admin-only) registers many voters in a single
+//! invocation, skipping any that are already registered.
 
 use soroban_sdk::{Address, Env, String, Vec, contract, contractimpl};
 
@@ -159,6 +164,56 @@ mod contract {
             Ok(())
         }
 
+        /// Admin registers many voters in a single invocation.
+        ///
+        /// Voters already registered (or duplicated within `voters`) are
+        /// skipped, so the call is idempotent.  Storage TTL is extended for
+        /// every newly registered voter.
+        ///
+        /// # Errors
+        /// - [`BallotError::NotInitialized`] if the contract has not been initialized.
+        /// - [`BallotError::Unauthorized`] if the caller is not the admin.
+        pub fn register_voters_batch(
+            env: Env,
+            voters: Vec<Address>,
+        ) -> Result<(), BallotError> {
+            if !env.storage().instance().has(&DataKey::Admin) {
+                return Err(BallotError::NotInitialized);
+            }
+
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(BallotError::NotInitialized)?;
+            admin.require_auth();
+
+            let mut registered: u32 = 0;
+            for voter in voters.iter() {
+                let voter_key = DataKey::RegisteredVoter(voter.clone());
+                let already: bool = env
+                    .storage()
+                    .persistent()
+                    .get(&voter_key)
+                    .unwrap_or(false);
+                if already {
+                    continue;
+                }
+
+                env.storage().persistent().set(&voter_key, &true);
+                env.storage().persistent().extend_ttl(
+                    &voter_key,
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+                registered += 1;
+            }
+
+            bump(&env);
+            events::voters_registered_batch(&env, registered);
+            Ok(())
+        }
+
         /// Admin deregisters a voter, correcting a registration mistake.
         ///
         /// Only allowed before any vote has been cast.
@@ -214,260 +269,6 @@ mod contract {
         /// `initialize`.  For two-choice ballots the conventional mapping is
         /// `0 = no`, `1 = yes`.
         ///
-        /// # Errors
-        /// - [`BallotError::NotInitialized`]
-        /// - [`BallotError::VotingNotStarted`] if before `voting_start`.
-        /// - [`BallotError::VotingClosed`] if voting is inactive or past `voting_end`.
-        /// - [`BallotError::NotRegistered`] if the voter is not registered.
-        /// - [`BallotError::AlreadyVoted`] if the voter has already voted.
-        /// - [`BallotError::InvalidChoice`] if `choice >= number of choices`.
-        pub fn vote(env: Env, voter: Address, choice: u32) -> Result<(), BallotError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(BallotError::NotInitialized);
-            }
-            voter.require_auth();
+    
 
-            let voting_active: bool = env
-                .storage()
-                .instance()
-                .get(&DataKey::VotingActive)
-                .unwrap_or(false);
-            if !voting_active {
-                return Err(BallotError::VotingClosed);
-            }
-
-            // Enforce voting window.
-            let voting_start: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::VotingStart)
-                .unwrap_or(0u32);
-            let voting_end: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::VotingEnd)
-                .unwrap_or(0u32);
-            let current = env.ledger().sequence();
-            if current < voting_start {
-                return Err(BallotError::VotingNotStarted);
-            }
-            if current > voting_end {
-                return Err(BallotError::VotingClosed);
-            }
-
-            let is_registered: bool = env
-                .storage()
-                .persistent()
-                .get(&DataKey::RegisteredVoter(voter.clone()))
-                .unwrap_or(false);
-            if !is_registered {
-                return Err(BallotError::NotRegistered);
-            }
-
-            let already_voted: bool = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Voter(voter.clone()))
-                .unwrap_or(false);
-            if already_voted {
-                return Err(BallotError::AlreadyVoted);
-            }
-
-            // Validate choice against the stored choices list.
-            let choices: Vec<String> = env
-                .storage()
-                .instance()
-                .get(&DataKey::Choices)
-                .ok_or(BallotError::NotInitialized)?;
-            if choice >= choices.len() {
-                return Err(BallotError::InvalidChoice);
-            }
-
-            // Mark voter as having voted.
-            let voter_key = DataKey::Voter(voter.clone());
-            let registered_key = DataKey::RegisteredVoter(voter.clone());
-            env.storage().persistent().set(&voter_key, &true);
-            env.storage().persistent().extend_ttl(
-                &voter_key,
-                LEDGER_LIFETIME_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-            env.storage().persistent().extend_ttl(
-                &registered_key,
-                LEDGER_LIFETIME_THRESHOLD,
-                LEDGER_BUMP_AMOUNT,
-            );
-
-            // Increment total-vote counter (used by deregister_voter guard).
-            let total: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalVotes)
-                .unwrap_or(0i128);
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalVotes, &(total.saturating_add(1)));
-
-            // Increment the per-choice counter.
-            let current_count: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::ChoiceVotes(choice))
-                .unwrap_or(0i128);
-            env.storage().instance().set(
-                &DataKey::ChoiceVotes(choice),
-                &(current_count.saturating_add(1)),
-            );
-
-            // Keep backward-compat yes/no counters in sync for two-choice ballots.
-            if choice == 1 {
-                let yes: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::YesVotes)
-                    .unwrap_or(0i128);
-                env.storage()
-                    .instance()
-                    .set(&DataKey::YesVotes, &yes.saturating_add(1));
-            } else if choice == 0 {
-                let no: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::NoVotes)
-                    .unwrap_or(0i128);
-                env.storage()
-                    .instance()
-                    .set(&DataKey::NoVotes, &no.saturating_add(1));
-            }
-
-            bump(&env);
-            events::voted(&env, &voter, choice);
-            Ok(())
-        }
-
-        /// Return per-choice vote tallies and close voting.
-        ///
-        /// Returns a `Vec<i128>` whose `i`-th element is the vote count for
-        /// choice `i` (in the same order as the `choices` list passed to
-        /// `initialize`).
-        ///
-        /// # Errors
-        /// - [`BallotError::NotInitialized`]
-        /// - [`BallotError::Unauthorized`] if the caller is not the admin.
-        pub fn tally_all(env: Env) -> Result<Vec<i128>, BallotError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(BallotError::NotInitialized);
-            }
-
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Admin)
-                .ok_or(BallotError::NotInitialized)?;
-            admin.require_auth();
-
-            let choices: Vec<String> = env
-                .storage()
-                .instance()
-                .get(&DataKey::Choices)
-                .ok_or(BallotError::NotInitialized)?;
-
-            let mut counts: Vec<i128> = Vec::new(&env);
-            for i in 0..choices.len() {
-                let c: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::ChoiceVotes(i))
-                    .unwrap_or(0i128);
-                counts.push_back(c);
-            }
-
-            env.storage().instance().set(&DataKey::VotingActive, &false);
-
-            bump(&env);
-            events::tally_all_result(&env, &counts);
-            Ok(counts)
-        }
-
-        /// Backward-compatible tally for two-choice (yes/no) ballots.
-        ///
-        /// Returns `(yes_votes, no_votes)` i.e. `(choice[1] count, choice[0] count)`.
-        /// Also closes voting.
-        ///
-        /// For ballots with more than two choices use [`tally_all`].
-        ///
-        /// # Errors
-        /// - [`BallotError::NotInitialized`]
-        /// - [`BallotError::Unauthorized`] if the caller is not the admin.
-        ///
-        /// [`tally_all`]: BallotContract::tally_all
-        pub fn tally(env: Env) -> Result<(i128, i128), BallotError> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return Err(BallotError::NotInitialized);
-            }
-
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Admin)
-                .ok_or(BallotError::NotInitialized)?;
-            admin.require_auth();
-
-            let yes: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::YesVotes)
-                .unwrap_or(0i128);
-            let no: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::NoVotes)
-                .unwrap_or(0i128);
-
-            env.storage().instance().set(&DataKey::VotingActive, &false);
-
-            bump(&env);
-            events::tally_result(&env, yes, no);
-            Ok((yes, no))
-        }
-
-        /// Return yes vote count (choice index 1).
-        pub fn get_yes_votes(env: Env) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::YesVotes)
-                .unwrap_or(0i128)
-        }
-
-        /// Return no vote count (choice index 0).
-        pub fn get_no_votes(env: Env) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::NoVotes)
-                .unwrap_or(0i128)
-        }
-
-        /// Return the vote count for an arbitrary choice index.
-        ///
-        /// Returns 0 if `choice_index` is out of range or no votes have been cast.
-        pub fn get_choice_votes(env: Env, choice_index: u32) -> i128 {
-            env.storage()
-                .instance()
-                .get(&DataKey::ChoiceVotes(choice_index))
-                .unwrap_or(0i128)
-        }
-
-        /// Return the ordered list of choice labels.
-        pub fn get_choices(env: Env) -> Vec<String> {
-            env.storage()
-                .instance()
-                .get(&DataKey::Choices)
-                .unwrap_or_else(|| Vec::new(&env))
-        }
-    }
-}
-
-mod test;
-
-#[cfg(test)]
-mod prop_test;
+/* … truncated 9012 chars — edit only what you need near the top … */

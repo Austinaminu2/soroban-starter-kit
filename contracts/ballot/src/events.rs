@@ -9,6 +9,13 @@ pub fn voter_registered(env: &Env, voter: &Address) {
         .publish((Symbol::new(env, "voter_registered"),), voter.clone());
 }
 
+/// Emitted by `register_voters_batch` (#1122).
+/// `voters` contains the addresses newly registered in the batch.
+pub fn voters_registered_batch(env: &Env, voters: &Vec<Address>) {
+    env.events()
+        .publish((Symbol::new(env, "voters_registered_batch"),), voters.clone());
+}
+
 pub fn voter_deregistered(env: &Env, voter: &Address) {
     env.events()
         .publish((Symbol::new(env, "voter_deregistered"),), voter.clone());
