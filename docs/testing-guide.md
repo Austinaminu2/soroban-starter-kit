@@ -196,7 +196,7 @@ cargo test -p soroban-integration-tests
 
 Every test that runs against a Soroban `Env` automatically writes a JSON snapshot of the final ledger state (auth entries, storage, events) to a `test_snapshots/` directory next to the crate. The snapshot is checked on the next run; if it differs, the test fails.
 
-Snapshot files are committed to the repository. They serve as a regression guard: if a refactor silently changes what gets stored or which auth calls are made, the snapshot diff makes it visible in code review.
+> **Gitignore choice:** `test_snapshots/` directories are listed in `.gitignore` and are **not committed**. Each contributor generates their own snapshots locally, so they are not a cross-commit regression guard and never appear in `git status`/`git diff` for review. What they *are* useful for is catching accidental changes within a single working session: if you refactor and a snapshot that was passing a moment ago now differs, the failure points at exactly what changed in ledger state or auth calls.
 
 **Updating snapshots** after an intentional change:
 
@@ -210,6 +210,7 @@ rm -rf contracts/token/test_snapshots/
 cargo test -p soroban-token-template
 ```
 
+Because the snapshots are gitignored, there is no diff to review or commit — regenerating them simply refreshes your local baseline. If you want a change to ledger state or auth calls to be visible in code review, assert on it explicitly in the test (e.g. `env.events().all()` or `client.balance(...)`) rather than relying on the snapshot.
 Review the diff with `git diff` before committing — unexpected changes to auth entries or storage keys are a signal that something is wrong.
 
 ---
