@@ -18,6 +18,8 @@ pub enum BallotError {
     InvalidWindow = 9,
     VotingNotStarted = 10,
     NoChoices = 11,
+    InvalidRanking = 12,
+    DuplicateRanking = 13,
 }
 
 impl_display_error!(
@@ -33,4 +35,6 @@ impl_display_error!(
     InvalidWindow        => "invalid voting window",
     VotingNotStarted     => "voting not started",
     NoChoices            => "no choices provided",
+    InvalidRanking       => "invalid preference ranking",
+    DuplicateRanking     => "duplicate choice in ranking",
 );
