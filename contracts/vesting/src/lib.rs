@@ -210,14 +210,50 @@ mod contract {
             Ok(())
         }
 
-        /// Release all currently vested, unclaimed tokens to the beneficiary.
+        /// Reassign a vesting schedule from `current_beneficiary` to
+        /// `new_beneficiary`, authorized by the current beneficiary.
         ///
-        /// After `revoke`, the beneficiary may still claim tokens that were vested
-        /// at the time of revocation (the schedule amount is capped at that point).
+        /// This lets a beneficiary migrate to a new account (e.g. a hardware
+        /// wallet) without losing the unvested remainder or having to claim
+        /// from a compromised address. The schedule entry is moved in
+        /// persistent storage from the old beneficiary key to the new one.
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
-       
+        /// - [`VestingError::ScheduleNotFound`] if no schedule exists for `current_beneficiary`.
+        /// - [`VestingError::ScheduleAlreadyExists`] if a schedule already exists for `new_beneficiary`.
+        pub fn change_beneficiary(
+            env: Env,
+            current_beneficiary: Address,
+            new_beneficiary: Address,
+        ) -> Result<(), VestingError> {
+            if !env.storage().instance().has(&DataKey::Admin) {
+                return Err(VestingError::NotInitialized);
+            }
 
-/* … truncated 2175 chars — edit only what you need near the top … */
+            current_beneficiary.require_auth();
+
+            let old_key = DataKey::Schedule(current_beneficiary.clone());
+            let schedule: BeneficiarySchedule = env
+                .storage()
+                .persistent()
+                .get(&old_key)
+                .ok_or(VestingError::ScheduleNotFound)?;
+
+            let new_key = DataKey::Schedule(new_beneficiary.clone());
+            if env.storage().persistent().has(&new_key) {
+                return Err(VestingError::ScheduleAlreadyExists);
+            }
+
+            env.storage().persistent().set(&new_key, &schedule);
+            env.storage().persistent().remove(&old_key);
+            bump(&env);
+            bump_schedule(&env, &new_key);
+
+            events::beneficiary_changed(&env, &current_beneficiary, &new_beneficiary);
+            Ok(())
+        }
+
+        /// Release all currently vested, unclaimed tokens to the benefici
+
+/* … truncated 479 chars — edit only what you need near the top … */

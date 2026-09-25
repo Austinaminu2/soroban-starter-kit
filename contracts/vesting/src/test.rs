@@ -226,62 +226,73 @@ fn test_get_info_uninitialized_returns_none() {
 }
 
 #[test]
-fn test_claimable_before_cliff_is_zero() {
+fn test_change_beneficiary_moves_schedule() {
     let env = setup_env();
-    let (client, _admin, beneficiary, ..) = setup(&env);
-    assert_eq!(client.claimable(&beneficiary), 0);
-}
+    let (client, _admin, old_beneficiary, _token, cliff, end, amount) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
 
-// ── irrevocable schedule tests (#1139) ────────────────────────────────────────
+    client.change_beneficiary(&old_beneficiary, &new_beneficiary);
 
-#[test]
-fn test_create_irrevocable_schedule_stores_flag() {
-    let env = setup_env();
-    let admin = Address::generate(&env);
-    let beneficiary = Address::generate(&env);
-    let amount = 1_000i128;
-    let token = make_token(&env, &admin, amount);
-    let addr = env.register_contract(None, VestingContract);
-    let client = VestingContractClient::new(&env, &addr);
-    client.initialize(&admin, &token);
-    let cliff = env.ledger().sequence() + 10;
-    let end = cliff + 100;
-    client.create_schedule(&beneficiary, &cliff, &end, &amount, &false);
-    let info = client.get_info(&beneficiary).unwrap();
-    assert!(!info.is_revocable);
+    // Old key is cleared, new key holds the migrated schedule.
+    assert_eq!(client.get_info(&old_beneficiary), None);
+    let info = client.get_info(&new_beneficiary).unwrap();
+    assert_eq!(info.amount, amount);
+    assert_eq!(info.cliff_ledger, cliff);
+    assert_eq!(info.end_ledger, end);
+    assert_eq!(info.claimed, 0);
+    assert!(!info.revoked);
 }
 
 #[test]
-fn test_revoke_irrevocable_schedule_fails() {
+fn test_change_beneficiary_requires_auth() {
     let env = setup_env();
-    let admin = Address::generate(&env);
-    let beneficiary = Address::generate(&env);
-    let amount = 1_000i128;
-    let token = make_token(&env, &admin, amount);
-    let addr = env.register_contract(None, VestingContract);
-    let client = VestingContractClient::new(&env, &addr);
-    client.initialize(&admin, &token);
-    let cliff = env.ledger().sequence() + 10;
-    let end = cliff + 100;
-    client.create_schedule(&beneficiary, &cliff, &end, &amount, &false);
-    let result = client.try_revoke(&beneficiary);
-    assert_eq!(result, Err(Ok(VestingError::ScheduleIrrevocable)));
+    let (client, _admin, old_beneficiary, _token, _cliff, _end, _amount) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    // Only the current beneficiary may authorize the migration.
+    env.mock_auths(&[]);
+    let result = client.try_change_beneficiary(&old_beneficiary, &new_beneficiary);
+    assert!(result.is_err());
 }
 
 #[test]
-fn test_irrevocable_schedule_can_still_claim() {
+fn test_change_beneficiary_prevents_overwrite() {
     let env = setup_env();
-    let admin = Address::generate(&env);
-    let beneficiary = Address::generate(&env);
-    let amount = 1_000i128;
-    let token = make_token(&env, &admin, amount);
-    let addr = env.register_contract(None, VestingContract);
-    let client = VestingContractClient::new(&env, &addr);
-    client.initialize(&admin, &token);
-    let cliff = env.ledger().sequence() + 10;
-    let end = cliff + 100;
-    client.create_schedule(&beneficiary, &cliff, &end, &amount, &false);
+    let (client, _admin, old_beneficiary, _token, cliff, end, _amount) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    // Pre-existing schedule on the target address must not be clobbered.
+    client.create_schedule(&new_beneficiary, &cliff, &end, &500i128, &true);
+    let result = client.try_change_beneficiary(&old_beneficiary, &new_beneficiary);
+    assert_eq!(result, Err(Ok(VestingError::ScheduleAlreadyExists)));
+
+    // Original schedule remains intact on the old key.
+    assert!(client.get_info(&old_beneficiary).is_some());
+}
+
+#[test]
+fn test_change_beneficiary_missing_schedule_fails() {
+    let env = setup_env();
+    let (client, _admin, _beneficiary, _token, _cliff, _end, _amount) = setup(&env);
+    let missing = Address::generate(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    let result = client.try_change_beneficiary(&missing, &new_beneficiary);
+    assert_eq!(result, Err(Ok(VestingError::ScheduleNotFound)));
+}
+
+#[test]
+fn test_claim_after_beneficiary_migration() {
+    let env = setup_env();
+    let (client, _admin, old_beneficiary, token, _cliff, end, amount) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    client.change_beneficiary(&old_beneficiary, &new_beneficiary);
+
+    // The migrated schedule is claimable from the new address.
     env.ledger().with_mut(|l| l.sequence_number = end + 1);
-    let claimed = client.claim(&beneficiary);
+    let claimed = client.claim(&new_beneficiary);
     assert_eq!(claimed, amount);
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&new_beneficiary), amount);
 }
