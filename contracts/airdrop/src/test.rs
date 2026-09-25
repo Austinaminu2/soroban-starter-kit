@@ -291,17 +291,16 @@ fn test_claim_at_deadline_succeeds() {
     let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
     client.set_root(&root);
 
-    // ledger 200 == 200 — should still succeed (only > deadline is rejected)
     client.claim(&alice, &500i128, &proof_a);
     assert!(client.is_claimed(&alice));
 }
 
-/// Claim after the deadline is rejected with ClaimWindowClosed.
+/// Claim after the deadline is rejected.
 #[test]
 fn test_claim_after_deadline_rejected() {
     let env = Env::default();
     env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 100);
+    env.ledger().with_mut(|l| l.sequence_number = 201);
 
     let admin = Address::generate(&env);
     let alice = Address::generate(&env);
@@ -319,105 +318,90 @@ fn test_claim_after_deadline_rejected() {
     let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
     client.set_root(&root);
 
-    // Advance ledger past deadline
-    env.ledger().with_mut(|l| l.sequence_number = 201);
-
     let res = client.try_claim(&alice, &500i128, &proof_a);
     assert!(res.is_err());
 }
 
 // ---------------------------------------------------------------------------
-// Batch claim tests — #782
+// Sweep unclaimed tests — #1147
 // ---------------------------------------------------------------------------
 
-/// Batch claim succeeds when all proofs are valid.
+/// Sweep succeeds after the deadline and transfers the full remaining balance.
 #[test]
-fn test_claim_batch_success() {
+fn test_sweep_unclaimed_after_deadline_succeeds() {
     let env = Env::default();
-    let t = setup(&env);
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.sequence_number = 201);
 
-    let alice_amount = 400i128;
-    let bob_amount = 600i128;
+    let admin = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let airdrop = env.register_contract(None, AirdropContract);
+    let client = AirdropContractClient::new(&env, &airdrop);
+    client.initialize(&admin, &token, &200u32);
+    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
 
-    let leaf_a = leaf(&env, &t.alice, alice_amount);
-    let leaf_b = leaf(&env, &t.bob, bob_amount);
-    let (root, proof_a, proof_b) = two_leaf_tree(&env, leaf_a, leaf_b);
-    t.client.set_root(&root);
+    // No claims made — full balance should be sweepable.
+    client.sweep_unclaimed(&recipient);
 
-    let mut entries = Vec::new(&env);
-    entries.push_back((t.alice.clone(), alice_amount, proof_a));
-    entries.push_back((t.bob.clone(), bob_amount, proof_b));
-
-    t.client.claim_batch(&entries);
-
-    assert!(t.client.is_claimed(&t.alice));
-    assert!(t.client.is_claimed(&t.bob));
     assert_eq!(
-        TokenClient::new(&env, &t.token).balance(&t.alice),
-        alice_amount
+        TokenClient::new(&env, &token).balance(&recipient),
+        10_000i128
     );
-    assert_eq!(TokenClient::new(&env, &t.token).balance(&t.bob), bob_amount);
+    assert_eq!(TokenClient::new(&env, &token).balance(&airdrop), 0i128);
 }
 
-/// One invalid proof in the batch causes the entire batch to fail (all-or-nothing).
+/// Sweep before the deadline is rejected.
 #[test]
-fn test_claim_batch_invalid_proof_aborts_all() {
+fn test_sweep_unclaimed_before_deadline_rejected() {
     let env = Env::default();
-    let t = setup(&env);
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.sequence_number = 100);
 
-    let alice_amount = 400i128;
-    let bob_amount = 600i128;
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let airdrop = env.register_contract(None, AirdropContract);
+    let client = AirdropContractClient::new(&env, &airdrop);
+    client.initialize(&admin, &token, &200u32);
+    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
 
-    let leaf_a = leaf(&env, &t.alice, alice_amount);
-    let leaf_b = leaf(&env, &t.bob, bob_amount);
-    let (root, proof_a, proof_b) = two_leaf_tree(&env, leaf_a, leaf_b);
-    t.client.set_root(&root);
-
-    // Use bob's proof for alice — invalid
-    let mut entries = Vec::new(&env);
-    entries.push_back((t.alice.clone(), alice_amount, proof_b)); // wrong proof
-    entries.push_back((t.bob.clone(), bob_amount, proof_a)); // also wrong
-
-    let res = t.client.try_claim_batch(&entries);
+    let res = client.try_sweep_unclaimed(&recipient);
     assert!(res.is_err());
-
-    // Neither should be claimed
-    assert!(!t.client.is_claimed(&t.alice));
-    assert!(!t.client.is_claimed(&t.bob));
+    // Funds remain locked in the contract.
+    assert_eq!(TokenClient::new(&env, &token).balance(&airdrop), 10_000i128);
 }
 
-/// A batch containing an already-claimed entry fails all-or-nothing.
+/// Sweep at exactly the deadline ledger is rejected (must be strictly after).
 #[test]
-fn test_claim_batch_already_claimed_aborts_all() {
+fn test_sweep_unclaimed_at_deadline_rejected() {
     let env = Env::default();
-    let t = setup(&env);
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.sequence_number = 200);
 
-    let alice_amount = 400i128;
-    let bob_amount = 600i128;
+    let admin = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
+    let airdrop = env.register_contract(None, AirdropContract);
+    let client = AirdropContractClient::new(&env, &airdrop);
+    client.initialize(&admin, &token, &200u32);
+    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
 
-    let leaf_a = leaf(&env, &t.alice, alice_amount);
-    let leaf_b = leaf(&env, &t.bob, bob_amount);
-    let (root, proof_a, proof_b) = two_leaf_tree(&env, leaf_a, leaf_b);
-    t.client.set_root(&root);
-
-    // Alice claims individually first
-    t.client.claim(&t.alice, &alice_amount, &proof_a.clone());
-
-    // Now batch tries to claim alice again (and bob for the first time)
-    let mut entries = Vec::new(&env);
-    entries.push_back((t.alice.clone(), alice_amount, proof_a));
-    entries.push_back((t.bob.clone(), bob_amount, proof_b));
-
-    let res = t.client.try_claim_batch(&entries);
+    let res = client.try_sweep_unclaimed(&recipient);
     assert!(res.is_err());
-
-    // Bob must NOT have been claimed (batch rolled back)
-    assert!(!t.client.is_claimed(&t.bob));
 }
 
-/// Batch claim is also rejected after the deadline.
+/// Sweep only transfers the unclaimed remainder after some claims.
 #[test]
-fn test_claim_batch_after_deadline_rejected() {
+fn test_sweep_unclaimed_transfers_remainder() {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().with_mut(|l| l.sequence_number = 100);
@@ -425,6 +409,7 @@ fn test_claim_batch_after_deadline_rejected() {
     let admin = Address::generate(&env);
     let alice = Address::generate(&env);
     let bob = Address::generate(&env);
+    let recipient = Address::generate(&env);
     let token = env
         .register_stellar_asset_contract_v2(admin.clone())
         .address();
@@ -435,16 +420,19 @@ fn test_claim_batch_after_deadline_rejected() {
 
     let leaf_a = leaf(&env, &alice, 500i128);
     let leaf_b = leaf(&env, &bob, 500i128);
-    let (root, proof_a, proof_b) = two_leaf_tree(&env, leaf_a.clone(), leaf_b.clone());
+    let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
     client.set_root(&root);
 
-    // Advance past deadline
+    // Alice claims before the deadline.
+    client.claim(&alice, &500i128, &proof_a);
+
+    // Move past the deadline and sweep the remainder.
     env.ledger().with_mut(|l| l.sequence_number = 201);
+    client.sweep_unclaimed(&recipient);
 
-    let mut entries = Vec::new(&env);
-    entries.push_back((alice.clone(), 500i128, proof_a));
-    entries.push_back((bob.clone(), 500i128, proof_b));
-
-    let res = client.try_claim_batch(&entries);
-    assert!(res.is_err());
+    assert_eq!(
+        TokenClient::new(&env, &token).balance(&recipient),
+        9_500i128
+    );
+    assert_eq!(TokenClient::new(&env, &token).balance(&airdrop), 0i128);
 }

@@ -9,3 +9,10 @@ pub fn claimed(env: &Env, recipient: &Address, amount: i128) {
     env.events()
         .publish((Symbol::new(env, "claimed"),), (recipient.clone(), amount));
 }
+
+pub fn unclaimed_swept(env: &Env, recipient: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "UnclaimedSwept"),),
+        (recipient.clone(), amount),
+    );
+}
