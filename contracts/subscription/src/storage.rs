@@ -45,7 +45,8 @@ pub struct SubscriptionInfo {
     pub trial_ledgers: u32,
     /// Whether the trial period has been completed (first charge processed).
     pub trial_completed: bool,
-    /// Ledger sequence number of the last successful charge (or subscription start).
+    /// Start ledger of the most recently paid billing period (or subscription start
+    /// while in trial). The next period falls due `interval_ledgers` after this.
     pub last_charged_ledger: u32,
     /// Whether the subscription is currently active.
     pub active: bool,
