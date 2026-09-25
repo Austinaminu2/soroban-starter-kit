@@ -37,6 +37,12 @@ pub enum DataKey {
     /// Reward tokens deposited while no stake was active, held until
     /// stakers join (or reclaimed by the admin if the pool stays empty).
     UndistributedRewards,
+    /// Continuous emission rate in reward tokens per ledger (`i128`).
+    RewardRate,
+    /// Ledger sequence at which the current emission period ends (`u32`).
+    PeriodEnd,
+    /// Ledger sequence at which the current emission period started (`u32`).
+    LastUpdateLedger,
 }
 
 /// Scaling factor for reward-per-token fixed-point arithmetic.
