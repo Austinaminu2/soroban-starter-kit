@@ -27,3 +27,10 @@ pub fn admin_released(env: &Env, admin: &Address, amount: i128) {
     env.events()
         .publish((Symbol::new(env, "admin_released"), admin.clone()), amount);
 }
+
+pub fn admin_released_after_cliff(env: &Env, admin: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "admin_released_after_cliff"), admin.clone()),
+        amount,
+    );
+}
