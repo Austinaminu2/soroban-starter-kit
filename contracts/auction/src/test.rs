@@ -336,6 +336,7 @@ fn test_reserve_met_settles_to_seller() {
         &deadline,
         &Some(2_000i128),
         &0,
+        &u32::MAX,
         &0,
         &0,
         &None,
@@ -374,6 +375,7 @@ fn test_reserve_not_met_returns_funds_to_bidder() {
         &deadline,
         &Some(5_000i128),
         &0,
+        &u32::MAX,
         &0,
         &0,
         &None,
@@ -443,6 +445,7 @@ fn test_no_extension_when_bid_is_early() {
         &deadline,
         &None,
         &window,
+        &u32::MAX,
         &0,
         &0,
         &None,
@@ -478,6 +481,7 @@ fn test_deadline_extended_when_bid_is_near_deadline() {
         &deadline,
         &None,
         &window,
+        &u32::MAX,
         &0,
         &0,
         &None,
@@ -513,6 +517,7 @@ fn test_only_near_deadline_bid_extends() {
         &deadline,
         &None,
         &window,
+        &u32::MAX,
         &0,
         &0,
         &None,
@@ -528,6 +533,84 @@ fn test_only_near_deadline_bid_extends() {
     env.ledger().with_mut(|l| l.sequence_number = 97);
     client.bid(&b2, &1_500);
     assert_eq!(client.get_info().deadline, deadline + window);
+}
+
+/// Anti-sniping extensions are clamped to `max_deadline` and stop once it is
+/// reached, so bidders cannot postpone settlement indefinitely.
+#[test]
+fn test_extensions_halt_at_max_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, seller, b1, b2, token) = setup(&env);
+
+    let deadline: u32 = 100;
+    let window: u32 = 10;
+    let max_deadline: u32 = 115;
+    client.start(
+        &seller,
+        &token,
+        &1_000,
+        &100,
+        &deadline,
+        &None,
+        &window,
+        &max_deadline,
+        &0,
+        &0,
+        &None,
+        &None,
+    );
+
+    // First extension: 100 -> 110.
+    env.ledger().with_mut(|l| l.sequence_number = 95);
+    client.bid(&b1, &1_000);
+    assert_eq!(client.get_info().deadline, 110);
+
+    // Second extension is clamped: 110 -> 115 (not 120).
+    env.ledger().with_mut(|l| l.sequence_number = 105);
+    client.bid(&b2, &1_100);
+    assert_eq!(client.get_info().deadline, max_deadline);
+
+    // Further near-deadline bids no longer extend.
+    env.ledger().with_mut(|l| l.sequence_number = 114);
+    client.bid(&b1, &1_200);
+    let info = client.get_info();
+    assert_eq!(info.deadline, max_deadline);
+    assert_eq!(info.max_deadline, max_deadline);
+
+    // Past the cap, bidding is closed.
+    env.ledger().with_mut(|l| l.sequence_number = max_deadline + 1);
+    assert_eq!(
+        client.try_bid(&b2, &1_300),
+        Err(Ok(AuctionError::AuctionEnded))
+    );
+}
+
+/// `max_deadline` below `deadline` is rejected at start.
+#[test]
+fn test_start_rejects_max_deadline_before_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, seller, _, _, token) = setup(&env);
+
+    let deadline: u32 = 100;
+    assert_eq!(
+        client.try_start(
+            &seller,
+            &token,
+            &1_000,
+            &100,
+            &deadline,
+            &None,
+            &10,
+            &(deadline - 1),
+            &0,
+            &0,
+            &None,
+            &None,
+        ),
+        Err(Ok(AuctionError::InvalidDeadline))
+    );
 }
 
 // ---------------------------------------------------------------------------

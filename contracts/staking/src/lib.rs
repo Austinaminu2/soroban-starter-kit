@@ -244,6 +244,9 @@ mod contract {
             env.storage()
                 .instance()
                 .set(&DataKey::LastUpdateLedger, &env.ledger().sequence());
+            env.storage()
+                .instance()
+                .set(&DataKey::SlashDestination, &slash_destination);
             bump(&env);
             Ok(())
         }
@@ -297,6 +300,22 @@ mod contract {
                 &amount,
             );
             let prev: i128 = env
+        /// Slash up to `amount` from `staker`'s balance, routing the slashed
+        /// tokens to the configured `slash_destination`.
+        ///
+        /// The slash is applied first against the staker's active stake and,
+        /// if that is insufficient, against any pending unbond request.  This
+        /// closes the unbonding bypass where a staker could move funds into an
+        /// unbond request to escape slashing.
+        ///
+        /// # Errors
+        /// - [`StakingError::NotInitialized`] if the contract is not set up.
+        pub fn slash(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
+            let admin = get_admin(&env)?;
+            admin.require_auth();
+            let stake_token = get_stake_token(&env)?;
+
+            let current: i128 = env
                 .storage()
                 .persistent()
                 .get(&DataKey::Stake(staker.clone()))
@@ -332,6 +351,15 @@ mod contract {
                 env.storage()
                     .persistent()
                     .set(&DataKey::Rewards(staker.clone()), &0i128);
+            let mut remaining = if amount > current { current } else { amount };
+
+            // Reduce active stake first.
+            let stake_slashed = if remaining > current { current } else { remaining };
+            if stake_slashed > 0 {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Stake(staker.clone()), &(current - stake_slashed));
+                remaining -= stake_slashed;
             }
             bump(&env);
             Ok(reward)
@@ -448,6 +476,44 @@ mod contract {
         /// Returns the current global reward-per-token accumulator.
         pub fn reward_per_token_stored(env: Env) -> i128 {
             reward_per_token(&env)
+            // If the stake was insufficient, slash any pending unbond request.
+            if remaining > 0 {
+                if let Some(mut request) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, UnbondRequest>(&DataKey::UnbondRequest(staker.clone()))
+                {
+                    let unbond_slashed = if remaining > request.amount {
+                        request.amount
+                    } else {
+                        remaining
+                    };
+                    if unbond_slashed > 0 {
+                        request.amount -= unbond_slashed;
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::UnbondRequest(staker.clone()), &request);
+                        remaining -= unbond_slashed;
+                    }
+                }
+            }
+
+            let slashed = if amount > current { current } else { amount } - remaining;
+            if slashed > 0 {
+                let destination: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::SlashDestination)
+                    .ok_or(StakingError::NotInitialized)?;
+                token::Client::new(&env, &stake_token).transfer(
+                    &env.current_contract_address(),
+                    &destination,
+                    &slashed,
+                );
+            }
+
+            bump(&env);
+            Ok(())
         }
     }
 }
