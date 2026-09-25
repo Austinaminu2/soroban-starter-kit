@@ -56,6 +56,8 @@ pub struct SubscriptionInfo {
     /// Ledger sequence number the current paid period is measured from. The next
     /// charge is due at `last_charged_ledger + interval_ledgers`. After a
     /// pro-rated plan change this may lie in the future.
+    /// Start ledger of the most recently paid billing period (or subscription start
+    /// while in trial). The next period falls due `interval_ledgers` after this.
     pub last_charged_ledger: u32,
     /// Whether the subscription is currently active (false once cancelled,
     /// suspended or migrated to another plan).

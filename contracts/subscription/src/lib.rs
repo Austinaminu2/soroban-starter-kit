@@ -473,6 +473,14 @@ mod contract {
         /// becomes delinquent and `PaymentFailed` is returned; once the grace period
         /// since the first failed attempt has expired, a further failed attempt
         /// suspends the subscription and returns `Suspended`.
+        /// Requires the subscriber to have an active subscription and to have granted
+        /// sufficient allowance to this contract. The first period is charged as soon
+        /// as the trial (if any) ends; each later period once its interval has elapsed.
+        ///
+        /// Missed periods are not forgiven: every period that has come due since the
+        /// last paid one is collected in a single call, limited to what the current
+        /// allowance covers. `last_charged_ledger` advances only by the periods
+        /// actually paid, so any remainder can be collected later.
         ///
         /// # Errors
         ///
@@ -714,6 +722,45 @@ mod contract {
             old.active = false;
             save_subscription(&env, &subscriber, &old);
             save_subscription(&env, &subscriber, &new_info);
+            // Ledger at which the next unpaid period starts. While in trial the
+            // first period starts the moment the trial ends; afterwards each
+            // period starts one interval after the last paid one.
+            let next_due = if info.trial_completed {
+                info.last_charged_ledger + info.interval_ledgers
+            } else {
+                info.last_charged_ledger + info.trial_ledgers
+            };
+            if current_ledger < next_due {
+                return Err(SubscriptionError::IntervalNotElapsed);
+            }
+
+            // Every period that has started since `next_due` is owed, including
+            // any missed while the subscriber lacked allowance.
+            let due_intervals = 1 + (current_ledger - next_due) / info.interval_ledgers;
+
+            let token_client = token::Client::new(&env, &token_addr);
+            let allowance = token_client.allowance(&subscriber, &env.current_contract_address());
+
+            // Collect as many owed periods as the allowance covers; the rest stay owed.
+            let affordable = allowance / info.amount;
+            let paid_intervals = u32::try_from(affordable)
+                .unwrap_or(u32::MAX)
+                .min(due_intervals);
+            if paid_intervals == 0 {
+                return Err(SubscriptionError::InsufficientAllowance);
+            }
+            let total = info
+                .amount
+                .checked_mul(i128::from(paid_intervals))
+                .ok_or(SubscriptionError::InvalidAmount)?;
+
+            // checks-effects-interactions: update state before external call.
+            // Advance only by the periods actually paid so unpaid ones remain collectable.
+            let trial_just_completed = !info.trial_completed;
+            info.trial_completed = true;
+            info.last_charged_ledger = next_due + (paid_intervals - 1) * info.interval_ledgers;
+            env.storage().persistent().set(&key, &info);
+            bump_subscription(&env, &subscriber);
             bump_instance(&env);
 
             events::plan_changed(
@@ -724,6 +771,14 @@ mod contract {
                 proration.credit,
                 proration.charge,
             );
+                &provider,
+                &total,
+            );
+
+            if trial_just_completed {
+                events::trial_completed(&env, &subscriber);
+            }
+            events::charged(&env, &subscriber, &provider, total);
             Ok(())
         }
 
