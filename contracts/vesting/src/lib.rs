@@ -179,6 +179,10 @@ fn validate_schedule(cliff_ledger: u32, end_ledger: u32, now: u32) -> Result<(),
 /// 1. Admin calls `initialize` — deposits `amount` tokens and records the schedule.
 /// 2. Beneficiary calls `claim` any time after the cliff to receive vested tokens.
 /// 3. Admin may call `revoke` to cancel unvested tokens (returned to admin).
+///
+/// Revocation may be configured with a grace period (`revocation_delay` ledgers)
+/// during which vesting continues and the beneficiary can still claim. The
+/// revocation is only finalized once the delay has elapsed.
 pub use contract::*;
 
 // The `#[contract]` / `#[contractimpl]` macros generate an undocumented public
@@ -212,9 +216,37 @@ mod contract {
             env.storage().instance().set(&DataKey::Token, &token);
             env.storage().instance().set(&DataKey::Version, &1u32);
             env.storage().instance().set(&DataKey::AdminReleased, &0i128);
+            // Default: no grace period (immediate revocation) unless configured.
+            env.storage().instance().set(&DataKey::RevocationDelay, &0u32);
 
             bump(&env);
             Ok(())
+        }
+
+        /// Configure the revocation grace period, in ledgers. Only the admin may
+        /// call this. A value of `0` restores immediate revocation.
+        ///
+        /// # Errors
+        /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
+        pub fn set_revocation_delay(env: Env, delay: u32) -> Result<(), VestingError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(VestingError::NotInitialized)?;
+            admin.require_auth();
+
+            env.storage().instance().set(&DataKey::RevocationDelay, &delay);
+            bump(&env);
+            Ok(())
+        }
+
+        /// Return the currently configured revocation grace period, in ledgers.
+        pub fn revocation_delay(env: Env) -> u32 {
+            env.storage()
+                .instance()
+                .get(&DataKey::RevocationDelay)
+                .unwrap_or(0)
         }
 
         /// Create a new vesting schedule for a beneficiary and transfer `amount` tokens from the caller into the contract.
@@ -275,6 +307,8 @@ mod contract {
                 tranches: Vec::new(&env),
                 milestone_oracle: None,
                 milestone_released: false,
+                revocation_pending: false,
+                revocation_ledger: 0,
             };
             env.storage().persistent().set(&schedule_key, &schedule);
             bump(&env);
@@ -298,6 +332,10 @@ mod contract {
         /// the ledger reaches `ledger_sequence`. Ledgers must be strictly
         /// increasing, each BPS in `(0, 10_000]`, and the cumulative BPS must
         /// not exceed 10_000 (100%).
+        /// After `revoke`, the beneficiary may still claim tokens that were vested
+        /// at the time of revocation (the schedule amount is capped at that point).
+        /// While a revocation is pending, vesting continues and the beneficiary may
+        /// claim tokens that vest during the grace period.
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
@@ -352,6 +390,40 @@ mod contract {
                 milestone_oracle: None,
                 milestone_released: false,
             };
+            let amount = schedule.amount;
+            let cliff_ledger = schedule.cliff_ledger;
+            let end_ledger = schedule.end_ledger;
+            let claimed = schedule.claimed;
+            let revoked = schedule.revoked;
+
+            let now = env.ledger().sequence();
+
+            // Determine the effective end of vesting. If the schedule has been
+            // revoked, vesting stops at the revocation ledger. If a revocation is
+            // pending, vesting continues until the grace period elapses, at which
+            // point it is capped at the finalization ledger.
+            let effective_end = if revoked {
+                schedule.revocation_ledger
+            } else if schedule.revocation_pending {
+                let finalize_ledger = schedule
+                    .revocation_ledger
+                    .saturating_add(revocation_delay(&env));
+                if now >= finalize_ledger {
+                    finalize_ledger
+                } else {
+                    end_ledger
+                }
+            } else {
+                end_ledger
+            };
+
+            let vested = vested_amount(amount, cliff_ledger, effective_end, now);
+            let claimable = vested - claimed;
+            if claimable <= 0 {
+                return Err(VestingError::NothingToClaim);
+            }
+
+            schedule.claimed = claimed + claimable;
             env.storage().persistent().set(&schedule_key, &schedule);
             bump(&env);
             bump_schedule(&env, &schedule_key);
@@ -372,6 +444,14 @@ mod contract {
         /// [`Self::release_milestone`] once the deliverable is verified. The
         /// admin may set the oracle to any address (including a multi-sig
         /// contract) at schedule creation time or later.
+            events::claimed(&env, &beneficiary, claimable);
+            Ok(claimable)
+        }
+
+        /// Revoke a beneficiary's schedule. If a revocation grace period is
+        /// configured, the schedule transitions to a pending state and vesting
+        /// continues until the delay elapses; otherwise the revocation is applied
+        /// immediately.
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
@@ -381,6 +461,8 @@ mod contract {
             beneficiary: Address,
             oracle: Address,
         ) -> Result<(), VestingError> {
+        /// - [`VestingError::AlreadyRevoked`] if the schedule is already revoked or pending.
+        pub fn revoke(env: Env, beneficiary: Address) -> Result<(), VestingError> {
             let admin: Address = env
                 .storage()
                 .instance()
@@ -407,6 +489,32 @@ mod contract {
         /// Must be called by the configured milestone oracle (which may be a
         /// multi-sig contract). Once released, the full `amount` becomes
         /// vested and claimable by the beneficiary.
+            if schedule.revoked || schedule.revocation_pending {
+                return Err(VestingError::AlreadyRevoked);
+            }
+
+            let now = env.ledger().sequence();
+            let delay = revocation_delay(&env);
+
+            if delay == 0 {
+                schedule.revoked = true;
+                schedule.revocation_ledger = now;
+            } else {
+                schedule.revocation_pending = true;
+                schedule.revocation_ledger = now;
+            }
+
+            env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
+            bump_schedule(&env, &schedule_key);
+
+            events::revoked(&env, &beneficiary, now);
+            Ok(())
+        }
+
+        /// Finalize a pending revocation once the grace period has elapsed. The
+        /// unvested remainder is returned to the admin and the schedule is marked
+        /// revoked. Callable by anyone; it is a no-op error if not yet due.
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
@@ -420,6 +528,19 @@ mod contract {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(VestingError::NotInitialized);
             }
+        /// - [`VestingError::AlreadyRevoked`] if the schedule is not pending revocation.
+        /// - [`VestingError::RevocationNotDue`] if the grace period has not elapsed.
+        pub fn finalize_revocation(env: Env, beneficiary: Address) -> Result<(), VestingError> {
+            let _admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(VestingError::NotInitialized)?;
+            let token: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Token)
+                .ok_or(VestingError::NotInitialized)?;
 
             let schedule_key = DataKey::Schedule(beneficiary.clone());
             let mut schedule: BeneficiarySchedule = env
@@ -449,3 +570,50 @@ mod contract {
     
 
 /* … truncated 2001 chars — edit only what you need near the top … */
+            if schedule.revoked || !schedule.revocation_pending {
+                return Err(VestingError::AlreadyRevoked);
+            }
+
+            let now = env.ledger().sequence();
+            let finalize_ledger = schedule
+                .revocation_ledger
+                .saturating_add(revocation_delay(&env));
+            if now < finalize_ledger {
+                return Err(VestingError::RevocationNotDue);
+            }
+
+            // Cap vesting at the finalization ledger and return the unvested
+            // remainder to the admin.
+            let vested = vested_amount(
+                schedule.amount,
+                schedule.cliff_ledger,
+                finalize_ledger,
+                now,
+            );
+            let unvested = schedule.amount - vested;
+
+            schedule.revoked = true;
+            schedule.revocation_pending = false;
+            schedule.revocation_ledger = finalize_ledger;
+            env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
+            bump_schedule(&env, &schedule_key);
+
+            if unvested > 0 {
+                let admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Admin)
+                    .ok_or(VestingError::NotInitialized)?;
+                token::Client::new(&env, &token).transfer(
+                    &env.current_contract_address(),
+                    &admin,
+                    &unvested,
+                );
+            }
+
+            events::revoked(&env, &beneficiary, finalize_ledger);
+            Ok(())
+        }
+    }
+}

@@ -18,6 +18,7 @@ pub enum StakingError {
     UnbondingNotComplete = 9,
     NoUnbondRequest = 10,
     UnbondRequestPending = 11,
+    InvalidPenalty = 12,
 }
 
 impl_display_error!(
@@ -33,6 +34,7 @@ impl_display_error!(
     UnbondingNotComplete   => "unbonding not complete",
     NoUnbondRequest        => "no unbond request",
     UnbondRequestPending   => "unbond request pending",
+    InvalidPenalty         => "invalid penalty",
 );
 
 #[cfg(test)]
@@ -57,7 +59,8 @@ StakingError::NoRewards = {}\n\
 StakingError::CompoundTokenMismatch = {}\n\
 StakingError::UnbondingNotComplete = {}\n\
 StakingError::NoUnbondRequest = {}\n\
-StakingError::UnbondRequestPending = {}\n",
+StakingError::UnbondRequestPending = {}\n\
+StakingError::InvalidPenalty = {}\n",
             StakingError::AlreadyInitialized as u32,
             StakingError::NotInitialized as u32,
             StakingError::Unauthorized as u32,
@@ -69,6 +72,7 @@ StakingError::UnbondRequestPending = {}\n",
             StakingError::UnbondingNotComplete as u32,
             StakingError::NoUnbondRequest as u32,
             StakingError::UnbondRequestPending as u32,
+            StakingError::InvalidPenalty as u32,
         )
     }
 

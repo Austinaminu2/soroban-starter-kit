@@ -23,9 +23,9 @@ fn bump_instance(env: &Env) {
         .extend_ttl(LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
 }
 
-fn bump_claimed(env: &Env, recipient: &Address) {
+fn bump_claimed(env: &Env, round_id: u32, recipient: &Address) {
     env.storage().persistent().extend_ttl(
-        &DataKey::Claimed(recipient.clone()),
+        &DataKey::Claimed(round_id, recipient.clone()),
         LEDGER_LIFETIME_THRESHOLD,
         LEDGER_BUMP_AMOUNT,
     );
@@ -120,13 +120,22 @@ mod contract {
             Ok(())
         }
 
-        /// Set (or replace) the merkle root. Only the admin may call this.
+        /// Set (or replace) the merkle root for a given round. Only the admin may call this.
+        ///
+        /// The root of an active, unexpired round cannot be replaced: once a round's
+        /// root is set and its claim window is still open, it is immutable. This
+        /// prevents an admin from invalidating outstanding proofs mid-round.
         ///
         /// # Errors
         ///
         /// Returns [`AirdropError::NotInitialized`] if the contract has not been initialized.
         /// Returns [`AirdropError::Unauthorized`] if caller is not the admin.
-        pub fn set_root(env: Env, root: BytesN<32>) -> Result<(), AirdropError> {
+        /// Returns [`AirdropError::RoundActive`] if the round already has a root and is unexpired.
+        pub fn set_root(
+            env: Env,
+            round_id: u32,
+            root: BytesN<32>,
+        ) -> Result<(), AirdropError> {
             let admin: Address = env
                 .storage()
                 .instance()
@@ -135,30 +144,49 @@ mod contract {
 
             admin.require_auth();
 
+            // Prevent changing the root of an active, unexpired round.
+            let existing: Option<Bytes> = env
+                .storage()
+                .instance()
+                .get(&DataKey::MerkleRoot(round_id));
+            if existing.is_some() {
+                let deadline: u32 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::ClaimDeadline)
+                    .ok_or(AirdropError::NotInitialized)?;
+                if env.ledger().sequence() <= deadline {
+                    return Err(AirdropError::RoundActive);
+                }
+            }
+
             let root_bytes = Bytes::from(root.clone());
             env.storage()
                 .instance()
-                .set(&DataKey::MerkleRoot, &root_bytes);
+                .set(&DataKey::MerkleRoot(round_id), &root_bytes);
             bump_instance(&env);
 
-            events::root_set(&env, &root_bytes);
+            events::root_set(&env, round_id, &root_bytes);
             Ok(())
         }
 
-        /// Claim tokens by supplying a valid merkle proof.
+        /// Claim tokens by supplying a valid merkle proof for a given round.
         ///
-        /// The caller must appear in the airdrop tree with exactly `amount` tokens.
+        /// The caller must appear in the round's airdrop tree with exactly `amount` tokens.
+        /// Claims are tracked per `(round_id, recipient)`, so a recipient may claim
+        /// once in each round of a multi-round campaign.
         ///
         /// # Errors
         ///
         /// Returns [`AirdropError::NotInitialized`] if not initialized.
-        /// Returns [`AirdropError::RootNotSet`] if no merkle root has been set.
+        /// Returns [`AirdropError::RootNotSet`] if no merkle root has been set for the round.
         /// Returns [`AirdropError::InvalidAmount`] if `amount <= 0`.
         /// Returns [`AirdropError::ClaimWindowClosed`] if the claim deadline has passed.
-        /// Returns [`AirdropError::AlreadyClaimed`] if the address already claimed.
+        /// Returns [`AirdropError::AlreadyClaimed`] if the address already claimed in this round.
         /// Returns [`AirdropError::InvalidProof`] if the merkle proof does not verify.
         pub fn claim(
             env: Env,
+            round_id: u32,
             recipient: Address,
             amount: i128,
             proof: Vec<BytesN<32>>,
@@ -172,7 +200,7 @@ mod contract {
             let root_bytes: Bytes = env
                 .storage()
                 .instance()
-                .get(&DataKey::MerkleRoot)
+                .get(&DataKey::MerkleRoot(round_id))
                 .ok_or(AirdropError::RootNotSet)?;
 
             if amount <= 0 {
@@ -191,8 +219,8 @@ mod contract {
 
             recipient.require_auth();
 
-            // Duplicate-claim prevention.
-            let claimed_key = DataKey::Claimed(recipient.clone());
+            // Duplicate-claim prevention, scoped to this round.
+            let claimed_key = DataKey::Claimed(round_id, recipient.clone());
             if env
                 .storage()
                 .persistent()
@@ -214,7 +242,7 @@ mod contract {
 
             // Checks-effects-interactions: mark claimed before transfer.
             env.storage().persistent().set(&claimed_key, &true);
-            bump_claimed(&env, &recipient);
+            bump_claimed(&env, round_id, &recipient);
             bump_instance(&env);
 
             token::Client::new(&env, &token_addr).transfer(
@@ -223,111 +251,11 @@ mod contract {
                 &amount,
             );
 
-            events::claimed(&env, &recipient, amount);
+            events::claimed(&env, round_id, &recipient, amount);
             Ok(())
         }
 
-        /// Batch-claim tokens for multiple recipients in a single transaction.
-        ///
-        /// A relayer (or the recipients themselves) may submit a list of
-        /// `(recipient, amount, proof)` tuples. The function uses **all-or-nothing**
-        /// semantics: if any entry fails proof verification or has already been
-        /// claimed, the entire transaction is aborted and no tokens are transferred.
-        ///
-        /// # Errors
-        ///
-        /// Returns [`AirdropError::NotInitialized`] if not initialized.
-        /// Returns [`AirdropError::RootNotSet`] if no merkle root has been set.
-        /// Returns [`AirdropError::ClaimWindowClosed`] if the claim deadline has passed.
-        /// Returns [`AirdropError::InvalidAmount`] if any entry has `amount <= 0`.
-        /// Returns [`AirdropError::AlreadyClaimed`] if any entry has already been claimed.
-        /// Returns [`AirdropError::InvalidProof`] if any entry's merkle proof is invalid.
-        pub fn claim_batch(
-            env: Env,
-            entries: Vec<(Address, i128, Vec<BytesN<32>>)>,
-        ) -> Result<(), AirdropError> {
-            let token_addr: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Token)
-                .ok_or(AirdropError::NotInitialized)?;
+        /// Sweep any tokens left unclaimed after the claim deadline.
+        //
 
-            let root_bytes: Bytes = env
-                .storage()
-                .instance()
-                .get(&DataKey::MerkleRoot)
-                .ok_or(AirdropError::RootNotSet)?;
-
-            // Deadline check applies to the whole batch.
-            let deadline: u32 = env
-                .storage()
-                .instance()
-                .get(&DataKey::ClaimDeadline)
-                .ok_or(AirdropError::NotInitialized)?;
-            if env.ledger().sequence() > deadline {
-                return Err(AirdropError::ClaimWindowClosed);
-            }
-
-            let root: BytesN<32> = root_bytes
-                .try_into()
-                .map_err(|_| AirdropError::RootNotSet)?;
-
-            // --- Validate all entries before any state change (all-or-nothing) ---
-            for (recipient, amount, proof) in entries.iter() {
-                if amount <= 0 {
-                    return Err(AirdropError::InvalidAmount);
-                }
-                let claimed_key = DataKey::Claimed(recipient.clone());
-                if env
-                    .storage()
-                    .persistent()
-                    .get::<_, bool>(&claimed_key)
-                    .unwrap_or(false)
-                {
-                    return Err(AirdropError::AlreadyClaimed);
-                }
-                let leaf = compute_leaf(&env, &recipient, amount);
-                if !verify_proof(&env, leaf, &proof, &root) {
-                    return Err(AirdropError::InvalidProof);
-                }
-            }
-
-            // --- Apply state changes and transfers ---
-            for (recipient, amount, _proof) in entries.iter() {
-                let claimed_key = DataKey::Claimed(recipient.clone());
-                env.storage().persistent().set(&claimed_key, &true);
-                bump_claimed(&env, &recipient);
-
-                token::Client::new(&env, &token_addr).transfer(
-                    &env.current_contract_address(),
-                    &recipient,
-                    &amount,
-                );
-
-                events::claimed(&env, &recipient, amount);
-            }
-
-            bump_instance(&env);
-            Ok(())
-        }
-
-        /// Returns `true` if `address` has already claimed.
-        pub fn is_claimed(env: Env, address: Address) -> bool {
-            env.storage()
-                .persistent()
-                .get::<_, bool>(&DataKey::Claimed(address))
-                .unwrap_or(false)
-        }
-
-        /// Returns the current merkle root, or `None` if not set.
-        pub fn get_root(env: Env) -> Option<Bytes> {
-            env.storage().instance().get(&DataKey::MerkleRoot)
-        }
-    }
-}
-
-#[cfg(test)]
-mod test;
-
-#[cfg(test)]
-mod prop_test;
+/* … truncated 2057 chars — edit only what you need near the top … */

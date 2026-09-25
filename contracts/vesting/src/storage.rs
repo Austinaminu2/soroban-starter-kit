@@ -28,6 +28,10 @@ pub struct BeneficiarySchedule {
     pub milestones: Vec<(u32, u32)>,
     /// Milestone ids that have been verified and released.
     pub released_milestones: Vec<u32>,
+    /// Ledger at which a pending revocation was requested (0 if none).
+    pub revocation_requested_ledger: u32,
+    /// Ledger at which a pending revocation finalizes (0 if none).
+    pub revocation_finalize_ledger: u32,
 }
 
 #[contracttype]
@@ -45,6 +49,8 @@ pub enum DataKey {
     Version,
     /// Address authorized to verify milestones (oracle / multi-sig).
     MilestoneOracle,
+    /// Configurable revocation grace period in ledgers (`u32`).
+    RevocationDelay,
 }
 
 /// Snapshot returned by `get_info`.
@@ -60,4 +66,7 @@ pub struct VestingInfo {
     pub tranches: Vec<(u32, u32)>,
     pub milestones: Vec<(u32, u32)>,
     pub released_milestones: Vec<u32>,
+}
+    pub revocation_requested_ledger: u32,
+    pub revocation_finalize_ledger: u32,
 }

@@ -230,13 +230,6 @@ mod contract {
             Ok(())
         }
 
-        /// Return the configured administrator.
-            extend_ttl_instance(&env);
-            bump_instance(&env);
-
-            Ok(())
-        }
-
         /// Get the current admin address.
         ///
         /// # Errors

@@ -20,6 +20,9 @@ pub enum VestingError {
     ArithmeticError = 11,
     ScheduleIrrevocable = 12,
     BeneficiaryAlreadyExists = 13,
+    RevocationPending = 11,
+    RevocationNotPending = 12,
+    RevocationDelayNotElapsed = 13,
 }
 
 impl_display_error!(
@@ -37,6 +40,19 @@ impl_display_error!(
     ArithmeticError       => "arithmetic error",
     ScheduleIrrevocable   => "schedule irrevocable",
     BeneficiaryAlreadyExists => "beneficiary already exists",
+    AlreadyInitialized       => "already initialized",
+    NotInitialized           => "not initialized",
+    NotAuthorized            => "not authorized",
+    InvalidAmount            => "invalid amount",
+    InvalidSchedule          => "invalid schedule",
+    NothingToClaim           => "nothing to claim",
+    AlreadyRevoked           => "already revoked",
+    CliffAlreadyPassed       => "cliff already passed",
+    ScheduleAlreadyExists    => "schedule already exists",
+    ScheduleNotFound         => "schedule not found",
+    RevocationPending        => "revocation pending",
+    RevocationNotPending     => "revocation not pending",
+    RevocationDelayNotElapsed => "revocation delay not elapsed",
 );
 
 #[cfg(test)]
@@ -64,6 +80,9 @@ VestingError::ScheduleNotFound = {}\n\
 VestingError::ArithmeticError = {}\n\
 VestingError::ScheduleIrrevocable = {}\n\
 VestingError::BeneficiaryAlreadyExists = {}\n",
+VestingError::RevocationPending = {}\n\
+VestingError::RevocationNotPending = {}\n\
+VestingError::RevocationDelayNotElapsed = {}\n",
             VestingError::AlreadyInitialized as u32,
             VestingError::NotInitialized as u32,
             VestingError::NotAuthorized as u32,
@@ -77,6 +96,9 @@ VestingError::BeneficiaryAlreadyExists = {}\n",
             VestingError::ArithmeticError as u32,
             VestingError::ScheduleIrrevocable as u32,
             VestingError::BeneficiaryAlreadyExists as u32,
+            VestingError::RevocationPending as u32,
+            VestingError::RevocationNotPending as u32,
+            VestingError::RevocationDelayNotElapsed as u32,
         )
     }
 

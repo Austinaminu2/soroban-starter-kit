@@ -80,6 +80,11 @@ pub fn deadline_extended(env: &Env, new_deadline: u32) {
         .publish((Symbol::new(env, "deadline_extended"),), new_deadline);
 }
 
+pub fn max_deadline_reached(env: &Env, max_deadline: u32) {
+    env.events()
+        .publish((Symbol::new(env, "max_deadline_reached"),), max_deadline);
+}
+
 pub fn cancelled(env: &Env, seller: &Address) {
     env.events()
         .publish((Symbol::new(env, "cancelled"), seller.clone()), ());
