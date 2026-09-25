@@ -17,6 +17,10 @@ pub struct BeneficiarySchedule {
     pub claimed: i128,
     /// Whether the schedule has been revoked by admin.
     pub revoked: bool,
+    /// Ledger at which a pending revocation was requested (0 if none).
+    pub revocation_requested_ledger: u32,
+    /// Ledger at which a pending revocation finalizes (0 if none).
+    pub revocation_finalize_ledger: u32,
 }
 
 #[contracttype]
@@ -32,6 +36,8 @@ pub enum DataKey {
     AdminReleased,
     /// Contract version number (`u32`).
     Version,
+    /// Configurable revocation grace period in ledgers (`u32`).
+    RevocationDelay,
 }
 
 /// Snapshot returned by `get_info`.
@@ -44,4 +50,6 @@ pub struct VestingInfo {
     pub amount: i128,
     pub claimed: i128,
     pub revoked: bool,
+    pub revocation_requested_ledger: u32,
+    pub revocation_finalize_ledger: u32,
 }
