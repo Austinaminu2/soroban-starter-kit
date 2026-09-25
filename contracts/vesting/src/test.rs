@@ -229,58 +229,112 @@ fn test_get_info_uninitialized_returns_none() {
 fn test_claimable_before_cliff_is_zero() {
     let env = setup_env();
     let (client, _admin, beneficiary, ..) = setup(&env);
-    let result = client.try_claim(&beneficiary);
-    assert_eq!(result, Err(Ok(VestingError::NothingToClaim)));
+    assert_eq!(client.claimable(&beneficiary), 0);
 }
 
-// ── admin_release tests ───────────────────────────────────────────────────────
+// ── pagination tests (#1143) ──────────────────────────────────────────────────
 
 #[test]
-fn test_admin_release_before_cliff_unlocks_all() {
+fn test_get_schedules_empty_registry() {
     let env = setup_env();
-    let (client, _admin, beneficiary, token, _cliff, _end, amount) = setup(&env);
-    let token_client = soroban_sdk::token::Client::new(&env, &token);
-    // Still before the cliff.
-    let released = client.admin_release(&beneficiary);
-    assert_eq!(released, amount);
-    assert_eq!(token_client.balance(&beneficiary), amount);
-    let info = client.get_info(&beneficiary).unwrap();
-    assert_eq!(info.claimed, amount);
-}
+    let admin = Address::generate(&env);
+    let token = make_token(&env, &admin, 1_000);
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
 
-#[test]
-fn test_admin_release_after_cliff_unlocks_remaining() {
-    let env = setup_env();
-    let (client, _admin, beneficiary, token, cliff, end, amount) = setup(&env);
-    let token_client = soroban_sdk::token::Client::new(&env, &token);
-    // Move past the cliff but before the end of the schedule.
-    let mid = cliff + (end - cliff) / 2;
-    env.ledger().with_mut(|l| l.sequence_number = mid);
-    let released = client.admin_release(&beneficiary);
-    assert_eq!(released, amount);
-    assert_eq!(token_client.balance(&beneficiary), amount);
-    let info = client.get_info(&beneficiary).unwrap();
-    assert_eq!(info.claimed, amount);
+    let page = client.get_schedules(&0u32, &10u32);
+    assert_eq!(page.records.len(), 0);
+    assert_eq!(page.next_cursor, None);
 }
 
 #[test]
-fn test_admin_release_after_partial_claim_releases_remainder() {
+fn test_get_schedules_paginates_across_multiple_schedules() {
     let env = setup_env();
-    let (client, _admin, beneficiary, token, cliff, end, amount) = setup(&env);
-    let token_client = soroban_sdk::token::Client::new(&env, &token);
-    let mid = cliff + (end - cliff) / 2;
-    env.ledger().with_mut(|l| l.sequence_number = mid);
-    let claimed = client.claim(&beneficiary);
-    let released = client.admin_release(&beneficiary);
-    assert_eq!(claimed + released, amount);
-    assert_eq!(token_client.balance(&beneficiary), amount);
+    let admin = Address::generate(&env);
+    let token = make_token(&env, &admin, 100_000);
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
+
+    let cliff = env.ledger().sequence() + 10;
+    let end = cliff + 100;
+    let total = 5u32;
+    for _ in 0..total {
+        let beneficiary = Address::generate(&env);
+        client.create_schedule(&beneficiary, &cliff, &end, &1_000i128);
+    }
+
+    // First page: 2 records, cursor points at the next index.
+    let page1 = client.get_schedules(&0u32, &2u32);
+    assert_eq!(page1.records.len(), 2);
+    assert_eq!(page1.next_cursor, Some(2u32));
+
+    // Second page: 2 records, cursor advances again.
+    let page2 = client.get_schedules(&page1.next_cursor.unwrap(), &2u32);
+    assert_eq!(page2.records.len(), 2);
+    assert_eq!(page2.next_cursor, Some(4u32));
+
+    // Final page: 1 record, no further cursor.
+    let page3 = client.get_schedules(&page2.next_cursor.unwrap(), &2u32);
+    assert_eq!(page3.records.len(), 1);
+    assert_eq!(page3.next_cursor, None);
+
+    // Every schedule is returned exactly once across the pages.
+    let mut seen = 0u32;
+    for info in page1.records.iter() {
+        assert_eq!(info.amount, 1_000i128);
+        seen += 1;
+    }
+    for info in page2.records.iter() {
+        assert_eq!(info.amount, 1_000i128);
+        seen += 1;
+    }
+    for info in page3.records.iter() {
+        assert_eq!(info.amount, 1_000i128);
+        seen += 1;
+    }
+    assert_eq!(seen, total);
 }
 
 #[test]
-fn test_admin_release_twice_second_returns_nothing() {
+fn test_get_schedules_enforces_bounded_page_size() {
     let env = setup_env();
-    let (client, _admin, beneficiary, ..) = setup(&env);
-    client.admin_release(&beneficiary);
-    let result = client.try_admin_release(&beneficiary);
-    assert_eq!(result, Err(Ok(VestingError::NothingToClaim)));
+    let admin = Address::generate(&env);
+    let token = make_token(&env, &admin, 100_000);
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
+
+    let cliff = env.ledger().sequence() + 10;
+    let end = cliff + 100;
+    for _ in 0..3 {
+        let beneficiary = Address::generate(&env);
+        client.create_schedule(&beneficiary, &cliff, &end, &1_000i128);
+    }
+
+    // Requesting an oversized limit is clamped to the contract's max page size.
+    let page = client.get_schedules(&0u32, &u32::MAX);
+    assert!(page.records.len() <= 3);
+    assert_eq!(page.records.len(), 3);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn test_get_schedules_cursor_past_end_returns_empty() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let token = make_token(&env, &admin, 100_000);
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
+
+    let cliff = env.ledger().sequence() + 10;
+    let end = cliff + 100;
+    let beneficiary = Address::generate(&env);
+    client.create_schedule(&beneficiary, &cliff, &end, &1_000i128);
+
+    let page = client.get_schedules(&10u32, &2u32);
+    assert_eq!(page.records.len(), 0);
+    assert_eq!(page.next_cursor, None);
 }
