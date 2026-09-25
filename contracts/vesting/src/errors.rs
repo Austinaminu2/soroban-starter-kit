@@ -18,6 +18,7 @@ pub enum VestingError {
     ScheduleAlreadyExists = 9,
     ScheduleNotFound = 10,
     ArithmeticError = 11,
+    ScheduleIrrevocable = 12,
 }
 
 impl_display_error!(
@@ -33,6 +34,7 @@ impl_display_error!(
     ScheduleAlreadyExists => "schedule already exists",
     ScheduleNotFound      => "schedule not found",
     ArithmeticError       => "arithmetic error",
+    ScheduleIrrevocable   => "schedule irrevocable",
 );
 
 #[cfg(test)]
@@ -57,7 +59,8 @@ VestingError::AlreadyRevoked = {}\n\
 VestingError::CliffAlreadyPassed = {}\n\
 VestingError::ScheduleAlreadyExists = {}\n\
 VestingError::ScheduleNotFound = {}\n\
-VestingError::ArithmeticError = {}\n",
+VestingError::ArithmeticError = {}\n\
+VestingError::ScheduleIrrevocable = {}\n",
             VestingError::AlreadyInitialized as u32,
             VestingError::NotInitialized as u32,
             VestingError::NotAuthorized as u32,
@@ -69,6 +72,7 @@ VestingError::ArithmeticError = {}\n",
             VestingError::ScheduleAlreadyExists as u32,
             VestingError::ScheduleNotFound as u32,
             VestingError::ArithmeticError as u32,
+            VestingError::ScheduleIrrevocable as u32,
         )
     }
 
