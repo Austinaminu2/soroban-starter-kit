@@ -245,8 +245,13 @@ mod contract {
         /// Provider pulls a recurring payment from a subscriber.
         ///
         /// Requires the subscriber to have an active subscription and to have granted
-        /// sufficient allowance to this contract. The interval since the last charge
-        /// must have fully elapsed.
+        /// sufficient allowance to this contract. The first period is charged as soon
+        /// as the trial (if any) ends; each later period once its interval has elapsed.
+        ///
+        /// Missed periods are not forgiven: every period that has come due since the
+        /// last paid one is collected in a single call, limited to what the current
+        /// allowance covers. `last_charged_ledger` advances only by the periods
+        /// actually paid, so any remainder can be collected later.
         ///
         /// # Errors
         ///
@@ -283,35 +288,43 @@ mod contract {
 
             let current_ledger = env.ledger().sequence();
 
-            // Check if trial period is still active
-            if !info.trial_completed {
-                if current_ledger < info.last_charged_ledger + info.trial_ledgers {
-                    return Err(SubscriptionError::IntervalNotElapsed);
-                }
-                // Trial period completed - mark as completed and update last charged ledger
-                info.trial_completed = true;
-                info.last_charged_ledger = current_ledger;
-                env.storage().persistent().set(&key, &info);
-                bump_subscription(&env, &subscriber);
-                bump_instance(&env);
-                events::trial_completed(&env, &subscriber);
-                return Ok(());
-            }
-
-            // Normal billing period check
-            if current_ledger < info.last_charged_ledger + info.interval_ledgers {
+            // Ledger at which the next unpaid period starts. While in trial the
+            // first period starts the moment the trial ends; afterwards each
+            // period starts one interval after the last paid one.
+            let next_due = if info.trial_completed {
+                info.last_charged_ledger + info.interval_ledgers
+            } else {
+                info.last_charged_ledger + info.trial_ledgers
+            };
+            if current_ledger < next_due {
                 return Err(SubscriptionError::IntervalNotElapsed);
             }
 
-            let token_client = token::Client::new(&env, &token_addr);
+            // Every period that has started since `next_due` is owed, including
+            // any missed while the subscriber lacked allowance.
+            let due_intervals = 1 + (current_ledger - next_due) / info.interval_ledgers;
 
+            let token_client = token::Client::new(&env, &token_addr);
             let allowance = token_client.allowance(&subscriber, &env.current_contract_address());
-            if allowance < info.amount {
+
+            // Collect as many owed periods as the allowance covers; the rest stay owed.
+            let affordable = allowance / info.amount;
+            let paid_intervals = u32::try_from(affordable)
+                .unwrap_or(u32::MAX)
+                .min(due_intervals);
+            if paid_intervals == 0 {
                 return Err(SubscriptionError::InsufficientAllowance);
             }
+            let total = info
+                .amount
+                .checked_mul(i128::from(paid_intervals))
+                .ok_or(SubscriptionError::InvalidAmount)?;
 
-            // checks-effects-interactions: update state before external call
-            info.last_charged_ledger = current_ledger;
+            // checks-effects-interactions: update state before external call.
+            // Advance only by the periods actually paid so unpaid ones remain collectable.
+            let trial_just_completed = !info.trial_completed;
+            info.trial_completed = true;
+            info.last_charged_ledger = next_due + (paid_intervals - 1) * info.interval_ledgers;
             env.storage().persistent().set(&key, &info);
             bump_subscription(&env, &subscriber);
             bump_instance(&env);
@@ -320,10 +333,13 @@ mod contract {
                 &env.current_contract_address(),
                 &subscriber,
                 &provider,
-                &info.amount,
+                &total,
             );
 
-            events::charged(&env, &subscriber, &provider, info.amount);
+            if trial_just_completed {
+                events::trial_completed(&env, &subscriber);
+            }
+            events::charged(&env, &subscriber, &provider, total);
             Ok(())
         }
 
