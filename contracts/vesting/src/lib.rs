@@ -70,6 +70,10 @@ fn validate_schedule(cliff_ledger: u32, end_ledger: u32, now: u32) -> Result<(),
 /// 1. Admin calls `initialize` — deposits `amount` tokens and records the schedule.
 /// 2. Beneficiary calls `claim` any time after the cliff to receive vested tokens.
 /// 3. Admin may call `revoke` to cancel unvested tokens (returned to admin).
+///
+/// Revocation may be configured with a grace period (`revocation_delay` ledgers)
+/// during which vesting continues and the beneficiary can still claim. The
+/// revocation is only finalized once the delay has elapsed.
 pub use contract::*;
 
 // The `#[contract]` / `#[contractimpl]` macros generate an undocumented public
@@ -103,9 +107,37 @@ mod contract {
             env.storage().instance().set(&DataKey::Token, &token);
             env.storage().instance().set(&DataKey::Version, &1u32);
             env.storage().instance().set(&DataKey::AdminReleased, &0i128);
+            // Default: no grace period (immediate revocation) unless configured.
+            env.storage().instance().set(&DataKey::RevocationDelay, &0u32);
 
             bump(&env);
             Ok(())
+        }
+
+        /// Configure the revocation grace period, in ledgers. Only the admin may
+        /// call this. A value of `0` restores immediate revocation.
+        ///
+        /// # Errors
+        /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
+        pub fn set_revocation_delay(env: Env, delay: u32) -> Result<(), VestingError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(VestingError::NotInitialized)?;
+            admin.require_auth();
+
+            env.storage().instance().set(&DataKey::RevocationDelay, &delay);
+            bump(&env);
+            Ok(())
+        }
+
+        /// Return the currently configured revocation grace period, in ledgers.
+        pub fn revocation_delay(env: Env) -> u32 {
+            env.storage()
+                .instance()
+                .get(&DataKey::RevocationDelay)
+                .unwrap_or(0)
         }
 
         /// Create a new vesting schedule for a beneficiary and transfer `amount` tokens from the caller into the contract.
@@ -155,6 +187,8 @@ mod contract {
                 end_ledger,
                 claimed: 0,
                 revoked: false,
+                revocation_pending: false,
+                revocation_ledger: 0,
             };
             env.storage().persistent().set(&schedule_key, &schedule);
             bump(&env);
@@ -175,6 +209,8 @@ mod contract {
         ///
         /// After `revoke`, the beneficiary may still claim tokens that were vested
         /// at the time of revocation (the schedule amount is capped at that point).
+        /// While a revocation is pending, vesting continues and the beneficiary may
+        /// claim tokens that vest during the grace period.
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
@@ -210,47 +246,106 @@ mod contract {
             let claimed = schedule.claimed;
             let revoked = schedule.revoked;
 
-            // After revoke, `amount` is already capped to what was vested at revoke time.
-            // We still allow claiming that remainder; once claimed == amount there's nothing left.
-            let vested = if revoked {
-                amount // amount was capped at revoke time
-            } else {
-                vested_amount(amount, cliff_ledger, end_ledger, env.ledger().sequence())
-            };
-            let claimable = vested - claimed;
+            let now = env.ledger().sequence();
 
+            // Determine the effective end of vesting. If the schedule has been
+            // revoked, vesting stops at the revocation ledger. If a revocation is
+            // pending, vesting continues until the grace period elapses, at which
+            // point it is capped at the finalization ledger.
+            let effective_end = if revoked {
+                schedule.revocation_ledger
+            } else if schedule.revocation_pending {
+                let finalize_ledger = schedule
+                    .revocation_ledger
+                    .saturating_add(revocation_delay(&env));
+                if now >= finalize_ledger {
+                    finalize_ledger
+                } else {
+                    end_ledger
+                }
+            } else {
+                end_ledger
+            };
+
+            let vested = vested_amount(amount, cliff_ledger, effective_end, now);
+            let claimable = vested - claimed;
             if claimable <= 0 {
                 return Err(VestingError::NothingToClaim);
             }
 
-            // Update the claimed amount
-            schedule.claimed += claimable;
+            schedule.claimed = claimed + claimable;
             env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
             bump_schedule(&env, &schedule_key);
 
-            // Transfer the claimable amount to the beneficiary
             token::Client::new(&env, &token).transfer(
                 &env.current_contract_address(),
                 &beneficiary,
                 &claimable,
             );
 
-            bump(&env);
             events::claimed(&env, &beneficiary, claimable);
             Ok(claimable)
         }
 
-        /// Admin cancels the vesting schedule for a beneficiary. Unvested tokens are returned to admin;
-        /// already-vested tokens remain claimable by the beneficiary (but no further
-        /// vesting accrues after this ledger).
+        /// Revoke a beneficiary's schedule. If a revocation grace period is
+        /// configured, the schedule transitions to a pending state and vesting
+        /// continues until the delay elapses; otherwise the revocation is applied
+        /// immediately.
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
         /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
-        /// - [`VestingError::NotAuthorized`] if the caller is not the admin.
-        /// - [`VestingError::AlreadyRevoked`] if already revoked.
-        pub fn revoke(env: Env, beneficiary: Address) -> Result<i128, VestingError> {
+        /// - [`VestingError::AlreadyRevoked`] if the schedule is already revoked or pending.
+        pub fn revoke(env: Env, beneficiary: Address) -> Result<(), VestingError> {
             let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(VestingError::NotInitialized)?;
+            admin.require_auth();
+
+            let schedule_key = DataKey::Schedule(beneficiary.clone());
+            let mut schedule: BeneficiarySchedule = env
+                .storage()
+                .persistent()
+                .get(&schedule_key)
+                .ok_or(VestingError::ScheduleNotFound)?;
+
+            if schedule.revoked || schedule.revocation_pending {
+                return Err(VestingError::AlreadyRevoked);
+            }
+
+            let now = env.ledger().sequence();
+            let delay = revocation_delay(&env);
+
+            if delay == 0 {
+                schedule.revoked = true;
+                schedule.revocation_ledger = now;
+            } else {
+                schedule.revocation_pending = true;
+                schedule.revocation_ledger = now;
+            }
+
+            env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
+            bump_schedule(&env, &schedule_key);
+
+            events::revoked(&env, &beneficiary, now);
+            Ok(())
+        }
+
+        /// Finalize a pending revocation once the grace period has elapsed. The
+        /// unvested remainder is returned to the admin and the schedule is marked
+        /// revoked. Callable by anyone; it is a no-op error if not yet due.
+        ///
+        /// # Errors
+        /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
+        /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
+        /// - [`VestingError::AlreadyRevoked`] if the schedule is not pending revocation.
+        /// - [`VestingError::RevocationNotDue`] if the grace period has not elapsed.
+        pub fn finalize_revocation(env: Env, beneficiary: Address) -> Result<(), VestingError> {
+            let _admin: Address = env
                 .storage()
                 .instance()
                 .get(&DataKey::Admin)
@@ -261,9 +356,6 @@ mod contract {
                 .get(&DataKey::Token)
                 .ok_or(VestingError::NotInitialized)?;
 
-            admin.require_auth();
-
-            // Get the schedule for this beneficiary
             let schedule_key = DataKey::Schedule(beneficiary.clone());
             let mut schedule: BeneficiarySchedule = env
                 .storage()
@@ -271,156 +363,50 @@ mod contract {
                 .get(&schedule_key)
                 .ok_or(VestingError::ScheduleNotFound)?;
 
-            if schedule.revoked {
+            if schedule.revoked || !schedule.revocation_pending {
                 return Err(VestingError::AlreadyRevoked);
             }
 
-            let amount = schedule.amount;
-            let cliff_ledger = schedule.cliff_ledger;
-            let end_ledger = schedule.end_ledger;
-            let claimed = schedule.claimed;
+            let now = env.ledger().sequence();
+            let finalize_ledger = schedule
+                .revocation_ledger
+                .saturating_add(revocation_delay(&env));
+            if now < finalize_ledger {
+                return Err(VestingError::RevocationNotDue);
+            }
 
-            let vested = vested_amount(amount, cliff_ledger, end_ledger, env.ledger().sequence());
-            // Tokens vested but not yet claimed stay in the contract for the beneficiary.
-            // Tokens not yet vested are returned to admin.
-            let returnable = amount - vested;
+            // Cap vesting at the finalization ledger and return the unvested
+            // remainder to the admin.
+            let vested = vested_amount(
+                schedule.amount,
+                schedule.cliff_ledger,
+                finalize_ledger,
+                now,
+            );
+            let unvested = schedule.amount - vested;
 
-            // Mark as revoked and cap the schedule amount to what has vested
             schedule.revoked = true;
-            schedule.amount = vested;
+            schedule.revocation_pending = false;
+            schedule.revocation_ledger = finalize_ledger;
             env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
             bump_schedule(&env, &schedule_key);
-            // Claimed stays the same; beneficiary can still claim (vested - claimed).
-            let _ = claimed; // already stored, no change needed
 
-            if returnable > 0 {
+            if unvested > 0 {
+                let admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::Admin)
+                    .ok_or(VestingError::NotInitialized)?;
                 token::Client::new(&env, &token).transfer(
                     &env.current_contract_address(),
                     &admin,
-                    &returnable,
+                    &unvested,
                 );
             }
 
-            bump(&env);
-            events::revoked(&env, &beneficiary, &admin, returnable);
-            Ok(returnable)
-        }
-
-        /// Emergency unlock: admin releases all tokens to a beneficiary before their cliff.
-        ///
-        /// Only callable before the beneficiary's cliff ledger. Transfers the full unvested amount
-        /// to the beneficiary, emits an `admin_released` event, and records the
-        /// released amount in an on-chain audit-log entry.
-        ///
-        /// # Errors
-        /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`VestingError::NotAuthorized`] if the caller is not the admin.
-        /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
-        /// - [`VestingError::AlreadyRevoked`] if the schedule has already been revoked.
-        /// - [`VestingError::CliffAlreadyPassed`] if the cliff has already been reached.
-        /// - [`VestingError::NothingToClaim`] if there are no tokens left to release.
-        pub fn admin_release(env: Env, beneficiary: Address) -> Result<i128, VestingError> {
-            let admin: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Admin)
-                .ok_or(VestingError::NotInitialized)?;
-            let token: Address = env
-                .storage()
-                .instance()
-                .get(&DataKey::Token)
-                .ok_or(VestingError::NotInitialized)?;
-
-            admin.require_auth();
-
-            // Get the schedule for this beneficiary
-            let schedule_key = DataKey::Schedule(beneficiary.clone());
-            let mut schedule: BeneficiarySchedule = env
-                .storage()
-                .persistent()
-                .get(&schedule_key)
-                .ok_or(VestingError::ScheduleNotFound)?;
-
-            if schedule.revoked {
-                return Err(VestingError::AlreadyRevoked);
-            }
-
-            // Only callable before the cliff.
-            if env.ledger().sequence() >= schedule.cliff_ledger {
-                return Err(VestingError::CliffAlreadyPassed);
-            }
-
-            let releasable = schedule.amount - schedule.claimed;
-            if releasable <= 0 {
-                return Err(VestingError::NothingToClaim);
-            }
-
-            // Mark as revoked, cap amount to what's being released (nothing more to claim).
-            schedule.revoked = true;
-            schedule.amount = releasable;
-            schedule.claimed += releasable;
-            env.storage().persistent().set(&schedule_key, &schedule);
-            bump_schedule(&env, &schedule_key);
-
-            // Audit log: accumulate total admin-released tokens.
-            let prev_released: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::AdminReleased)
-                .unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::AdminReleased, &(prev_released + releasable));
-
-            token::Client::new(&env, &token).transfer(
-                &env.current_contract_address(),
-                &beneficiary,
-                &releasable,
-            );
-
-            bump(&env);
-            events::admin_released(&env, &admin, releasable);
-            Ok(releasable)
-        }
-
-        /// Returns a snapshot of the vesting schedule for a beneficiary, or `None` if not found.
-        pub fn get_info(env: Env, beneficiary: Address) -> Option<BeneficiarySchedule> {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return None;
-            }
-            bump(&env);
-            let schedule_key = DataKey::Schedule(beneficiary);
-            env.storage().persistent().get(&schedule_key)
-        }
-
-        /// Returns the amount claimable right now (vested minus already claimed) for a beneficiary.
-        pub fn claimable(env: Env, beneficiary: Address) -> i128 {
-            if !env.storage().instance().has(&DataKey::Admin) {
-                return 0;
-            }
-            let schedule_key = DataKey::Schedule(beneficiary);
-            let schedule: BeneficiarySchedule = match env.storage().persistent().get(&schedule_key) {
-                Some(s) => s,
-                None => return 0,
-            };
-            
-            let amount = schedule.amount;
-            let cliff_ledger = schedule.cliff_ledger;
-            let end_ledger = schedule.end_ledger;
-            let claimed = schedule.claimed;
-            let revoked = schedule.revoked;
-            // After revoke, amount is already capped to what was vested at revoke time.
-            let vested = if revoked {
-                amount
-            } else {
-                vested_amount(amount, cliff_ledger, end_ledger, env.ledger().sequence())
-            };
-            (vested - claimed).max(0)
-        }
-
-        /// Return the on-chain contract version number.
-        pub fn contract_version(env: Env) -> u32 {
-            env.storage().instance().get(&DataKey::Version).unwrap_or(0)
+            events::revoked(&env, &beneficiary, finalize_ledger);
+            Ok(())
         }
     }
 }

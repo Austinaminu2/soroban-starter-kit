@@ -17,20 +17,26 @@ pub enum VestingError {
     CliffAlreadyPassed = 8,
     ScheduleAlreadyExists = 9,
     ScheduleNotFound = 10,
+    RevocationPending = 11,
+    RevocationNotPending = 12,
+    RevocationDelayNotElapsed = 13,
 }
 
 impl_display_error!(
     VestingError,
-    AlreadyInitialized    => "already initialized",
-    NotInitialized        => "not initialized",
-    NotAuthorized         => "not authorized",
-    InvalidAmount         => "invalid amount",
-    InvalidSchedule       => "invalid schedule",
-    NothingToClaim        => "nothing to claim",
-    AlreadyRevoked        => "already revoked",
-    CliffAlreadyPassed    => "cliff already passed",
-    ScheduleAlreadyExists => "schedule already exists",
-    ScheduleNotFound      => "schedule not found",
+    AlreadyInitialized       => "already initialized",
+    NotInitialized           => "not initialized",
+    NotAuthorized            => "not authorized",
+    InvalidAmount            => "invalid amount",
+    InvalidSchedule          => "invalid schedule",
+    NothingToClaim           => "nothing to claim",
+    AlreadyRevoked           => "already revoked",
+    CliffAlreadyPassed       => "cliff already passed",
+    ScheduleAlreadyExists    => "schedule already exists",
+    ScheduleNotFound         => "schedule not found",
+    RevocationPending        => "revocation pending",
+    RevocationNotPending     => "revocation not pending",
+    RevocationDelayNotElapsed => "revocation delay not elapsed",
 );
 
 #[cfg(test)]
@@ -54,7 +60,10 @@ VestingError::NothingToClaim = {}\n\
 VestingError::AlreadyRevoked = {}\n\
 VestingError::CliffAlreadyPassed = {}\n\
 VestingError::ScheduleAlreadyExists = {}\n\
-VestingError::ScheduleNotFound = {}\n",
+VestingError::ScheduleNotFound = {}\n\
+VestingError::RevocationPending = {}\n\
+VestingError::RevocationNotPending = {}\n\
+VestingError::RevocationDelayNotElapsed = {}\n",
             VestingError::AlreadyInitialized as u32,
             VestingError::NotInitialized as u32,
             VestingError::NotAuthorized as u32,
@@ -65,6 +74,9 @@ VestingError::ScheduleNotFound = {}\n",
             VestingError::CliffAlreadyPassed as u32,
             VestingError::ScheduleAlreadyExists as u32,
             VestingError::ScheduleNotFound as u32,
+            VestingError::RevocationPending as u32,
+            VestingError::RevocationNotPending as u32,
+            VestingError::RevocationDelayNotElapsed as u32,
         )
     }
 
