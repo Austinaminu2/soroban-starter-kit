@@ -402,3 +402,6 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - #1030: CONTRIBUTING.md contains two entire, inconsistent contributing guides concatenated together — the first ~220 lines are an orphaned pre-19-contract-era version
 <!-- handsoff-issue-1119 -->
 - #1119: contracts/multisig: Off-chain EIP-712 / SEP-format typed signature batch verification
+
+<!-- handsoff-issue-1132 -->
+- #1132: contracts/staking: Time-weighted lockup boosting for staking rewards
