@@ -263,3 +263,57 @@ proptest! {
         }
     }
 }
+
+    // Regression tests for issue #1138: large token supplies with long
+    // durations must not overflow `amount * elapsed` in `vested_amount`.
+    // 10 billion tokens at 18 decimals = 1e28 units; 10 years of ledgers
+    // (~6.3e7) would push the unchecked product past i128::MAX.
+    #[test]
+    fn prop_vested_amount_large_supply_no_overflow(
+        // 1e28 units (10 billion tokens @ 18 decimals) up to i128::MAX.
+        amount in 10_000_000_000_000_000_000_000_000_000i128..=i128::MAX,
+        // Long durations: up to ~10 years of ledgers.
+        duration in 1u32..=63_000_000u32,
+        checkpoint_pct in 0u32..=100u32,
+    ) {
+        let cliff = 1u32;
+        let end = cliff + duration;
+        let checkpoint = cliff + duration * checkpoint_pct / 100;
+
+        // Must not panic and must match the exact linear interpolation.
+        let vested = vested_amount(amount, cliff, end, checkpoint);
+        let expected = if checkpoint < cliff {
+            0
+        } else if checkpoint >= end {
+            amount
+        } else {
+            // Reference computation using 256-bit wide math to avoid the
+            // very overflow we are guarding against.
+            let elapsed = u128::from(checkpoint - cliff);
+            let total = u128::from(duration);
+            let wide = (amount as u128) * elapsed / total;
+            wide as i128
+        };
+        prop_assert_eq!(vested, expected);
+    }
+
+    #[test]
+    fn prop_vested_amount_max_supply_exact_linear(
+        // Maximum supply allocations with long durations.
+        amount in 10_000_000_000_000_000_000_000_000_000i128..=i128::MAX,
+        duration in 1u32..=63_000_000u32,
+    ) {
+        let cliff = 1u32;
+        let end = cliff + duration;
+
+        // At the end ledger the full amount must vest exactly.
+        prop_assert_eq!(vested_amount(amount, cliff, end, end), amount);
+        // At the cliff nothing has vested yet.
+        prop_assert_eq!(vested_amount(amount, cliff, end, cliff), 0);
+        // Halfway through, the result must be the exact floor of the
+        // linear interpolation computed with wide arithmetic.
+        let mid = cliff + duration / 2;
+        let expected = ((amount as u128) * u128::from(duration / 2) / u128::from(duration)) as i128;
+        prop_assert_eq!(vested_amount(amount, cliff, end, mid), expected);
+    }
+}

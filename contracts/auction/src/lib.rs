@@ -259,9 +259,21 @@ fn place_bid(
     if extension_window > 0 {
         let current_ledger = env.ledger().sequence();
         if deadline.saturating_sub(current_ledger) <= extension_window {
-            deadline = deadline.saturating_add(extension_window);
-            env.storage().instance().set(&DataKey::Deadline, &deadline);
-            events::deadline_extended(env, deadline);
+            let max_deadline: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::MaxDeadline)
+                .unwrap_or(u32::MAX);
+            let extended = deadline.saturating_add(extension_window);
+            let new_deadline = extended.min(max_deadline);
+            if new_deadline > deadline {
+                deadline = new_deadline;
+                env.storage().instance().set(&DataKey::Deadline, &deadline);
+                events::deadline_extended(env, deadline);
+            }
+            if extended > max_deadline {
+                events::max_deadline_reached(env, max_deadline);
+            }
         }
     }
 
@@ -328,6 +340,10 @@ mod contract {
         /// bid arrives within that many ledgers of the current deadline (anti-sniping).
         /// Pass `0` to disable anti-sniping.
         ///
+        /// `max_deadline` caps anti-sniping extensions: the deadline is never
+        /// extended past this ledger. Must be `>= deadline`; pass `u32::MAX` for
+        /// no cap.
+        ///
         /// `cancellation_grace_ledgers` is the number of ledgers after `start` during
         /// which the seller may cancel even after bids have been placed. Pass `0` to
         /// disable (cancel is then only possible before the first bid).
@@ -344,7 +360,8 @@ mod contract {
         /// - [`AuctionError::AlreadyInitialized`] if already started.
         /// - [`AuctionError::InvalidAmount`] if `start_price` or `min_increment` <= 0,
         ///   or `cancellation_fee` < 0.
-        /// - [`AuctionError::InvalidDeadline`] if `deadline` <= current ledger.
+        /// - [`AuctionError::InvalidDeadline`] if `deadline` <= current ledger or
+        ///   `max_deadline` < `deadline`.
         /// - [`AuctionError::InvalidNftParams`] if only one of `nft_contract` / `token_id`
         ///   is supplied.
         #[allow(clippy::too_many_arguments)]
@@ -357,6 +374,7 @@ mod contract {
             deadline: u32,
             reserve_price: Option<i128>,
             extension_window: u32,
+            max_deadline: u32,
             cancellation_grace_ledgers: u32,
             cancellation_fee: i128,
             nft_contract: Option<Address>,
@@ -368,7 +386,7 @@ mod contract {
             if start_price <= 0 || min_increment <= 0 || cancellation_fee < 0 {
                 return Err(AuctionError::InvalidAmount);
             }
-            if deadline <= env.ledger().sequence() {
+            if deadline <= env.ledger().sequence() || max_deadline < deadline {
                 return Err(AuctionError::InvalidDeadline);
             }
             validate_nft_params(&nft_contract, &token_id)?;
@@ -389,6 +407,9 @@ mod contract {
             env.storage()
                 .instance()
                 .set(&DataKey::ExtensionWindow, &extension_window);
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxDeadline, &max_deadline);
             env.storage()
                 .instance()
                 .set(&DataKey::HighestBid, &initial_highest);
@@ -879,6 +900,11 @@ mod contract {
                     .instance()
                     .get(&DataKey::ExtensionWindow)
                     .unwrap_or(0),
+                max_deadline: env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::MaxDeadline)
+                    .unwrap_or(u32::MAX),
                 start_ledger: env
                     .storage()
                     .instance()

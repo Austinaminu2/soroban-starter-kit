@@ -21,6 +21,9 @@ pub enum DataKey {
     /// Anti-sniping: number of ledgers to extend the deadline when a bid
     /// arrives within this window of the current deadline.
     ExtensionWindow,
+    /// Hard upper bound on `Deadline`: anti-sniping extensions never push the
+    /// deadline past this ledger.
+    MaxDeadline,
     /// True once the seller has cancelled the auction.
     Cancelled,
     /// Ledger sequence at which `start` was called; anchors the cancellation
@@ -69,6 +72,8 @@ pub struct AuctionInfo {
     pub reserve_price: Option<i128>,
     /// Anti-sniping extension window in ledgers (0 = disabled).
     pub extension_window: u32,
+    /// Ledger past which anti-sniping extensions cannot push the deadline.
+    pub max_deadline: u32,
     /// Ledger sequence at which the auction was started.
     pub start_ledger: u32,
     /// Seller cancellation grace window in ledgers (0 = disabled).

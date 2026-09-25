@@ -8,7 +8,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    Address, Env,
+    Address, Env, Vec,
     testutils::{Address as _, Ledger as _},
     token::StellarAssetClient,
 };
@@ -52,6 +52,7 @@ pub(crate) fn setup(
     let client = VestingContractClient::new(env, &addr);
     client.initialize(&admin, &token);
     client.create_schedule(&beneficiary, &token, &cliff, &end, &amount);
+    client.create_schedule(&beneficiary, &cliff, &end, &amount, &true);
     (client, admin, beneficiary, token, cliff, end, amount)
 }
 
@@ -87,6 +88,7 @@ fn test_create_schedule_zero_amount_fails() {
     let client = VestingContractClient::new(&env, &addr);
     client.initialize(&admin, &token);
     let result = client.try_create_schedule(&beneficiary, &token, &110u32, &200u32, &0i128);
+    let result = client.try_create_schedule(&beneficiary, &110u32, &200u32, &0i128, &true);
     assert_eq!(result, Err(Ok(VestingError::InvalidAmount)));
 }
 
@@ -101,6 +103,7 @@ fn test_create_schedule_invalid_schedule_fails() {
     client.initialize(&admin, &token);
     // cliff >= end
     let result = client.try_create_schedule(&beneficiary, &token, &200u32, &150u32, &1000i128);
+    let result = client.try_create_schedule(&beneficiary, &200u32, &150u32, &1000i128, &true);
     assert_eq!(result, Err(Ok(VestingError::InvalidSchedule)));
 }
 
@@ -227,10 +230,40 @@ fn test_get_info_uninitialized_returns_none() {
 }
 
 #[test]
-fn test_claimable_before_cliff_is_zero() {
+fn test_change_beneficiary_moves_schedule() {
     let env = setup_env();
     let (client, _admin, beneficiary, token, ..) = setup(&env);
     assert_eq!(client.claimable(&beneficiary, &token), 0);
+    let (client, _admin, old_beneficiary, _token, _cliff, _end, amount) = setup(&env);
+    let new_beneficiary = Address::generate(&env);
+    client.change_beneficiary(&old_beneficiary, &new_beneficiary);
+    assert_eq!(client.get_info(&old_beneficiary), None);
+    let info = client.get_info(&new_beneficiary).unwrap();
+    assert_eq!(info.amount, amount);
+}
+
+// ── tranche / milestone tests (#1141) ─────────────────────────────────────────
+
+/// Build a schedule with quarterly (25% BPS = 2500) tranche unlocks.
+fn setup_tranche_schedule(env: &Env) -> (VestingContractClient, Address, Address, u32, i128) {
+    let admin = Address::generate(env);
+    let beneficiary = Address::generate(env);
+    let amount = 1_000i128;
+    let token = make_token(env, &admin, amount);
+    let start = env.ledger().sequence();
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(env, &addr);
+    client.initialize(&admin, &token);
+
+    // Four quarterly tranches, each releasing 25% (2500 BPS).
+    let mut tranches: Vec<(u32, u32)> = Vec::new(env);
+    tranches.push_back((start + 25, 2_500));
+    tranches.push_back((start + 50, 2_500));
+    tranches.push_back((start + 75, 2_500));
+    tranches.push_back((start + 100, 2_500));
+
+    client.create_tranche_schedule(&beneficiary, &tranches, &amount);
+    (client, admin, beneficiary, start, amount)
 }
 
 // ── multi-token portfolio tests ───────────────────────────────────────────────
@@ -333,4 +366,144 @@ fn test_multi_token_duplicate_schedule_fails() {
     client.create_schedule(&beneficiary, &gov, &cliff, &end, &1_000i128);
     let result = client.try_create_schedule(&beneficiary, &gov, &cliff, &end, &1_000i128);
     assert_eq!(result, Err(Ok(VestingError::ScheduleAlreadyExists)));
+fn test_tranche_schedule_stores_tranches() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, _start, amount) = setup_tranche_schedule(&env);
+    let info = client.get_info(&beneficiary).unwrap();
+    assert_eq!(info.amount, amount);
+    assert_eq!(info.tranches.len(), 4);
+}
+
+#[test]
+fn test_tranche_nothing_vested_before_first_boundary() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, start, _amount) = setup_tranche_schedule(&env);
+    env.ledger().with_mut(|l| l.sequence_number = start + 24);
+    let result = client.try_claim(&beneficiary);
+    assert_eq!(result, Err(Ok(VestingError::NothingToClaim)));
+}
+
+#[test]
+fn test_tranche_first_quarter_unlock() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, start, amount) = setup_tranche_schedule(&env);
+    env.ledger().with_mut(|l| l.sequence_number = start + 25);
+    let claimed = client.claim(&beneficiary);
+    assert_eq!(claimed, amount * 2_500 / 10_000);
+}
+
+#[test]
+fn test_tranche_second_quarter_unlock() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, start, amount) = setup_tranche_schedule(&env);
+    env.ledger().with_mut(|l| l.sequence_number = start + 50);
+    let claimed = client.claim(&beneficiary);
+    assert_eq!(claimed, amount * 5_000 / 10_000);
+}
+
+#[test]
+fn test_tranche_third_quarter_unlock() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, start, amount) = setup_tranche_schedule(&env);
+    env.ledger().with_mut(|l| l.sequence_number = start + 75);
+    let claimed = client.claim(&beneficiary);
+    assert_eq!(claimed, amount * 7_500 / 10_000);
+}
+
+#[test]
+fn test_tranche_final_quarter_unlock_full_amount() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, start, amount) = setup_tranche_schedule(&env);
+    env.ledger().with_mut(|l| l.sequence_number = start + 100);
+    let claimed = client.claim(&beneficiary);
+    assert_eq!(claimed, amount);
+}
+
+#[test]
+fn test_tranche_incremental_claims() {
+    let env = setup_env();
+    let (client, _admin, beneficiary, start, amount) = setup_tranche_schedule(&env);
+    let quarter = amount * 2_500 / 10_000;
+
+    env.ledger().with_mut(|l| l.sequence_number = start + 25);
+    assert_eq!(client.claim(&beneficiary), quarter);
+
+    env.ledger().with_mut(|l| l.sequence_number = start + 50);
+    assert_eq!(client.claim(&beneficiary), quarter);
+
+    env.ledger().with_mut(|l| l.sequence_number = start + 75);
+    assert_eq!(client.claim(&beneficiary), quarter);
+
+    env.ledger().with_mut(|l| l.sequence_number = start + 100);
+    assert_eq!(client.claim(&beneficiary), quarter);
+}
+
+#[test]
+fn test_tranche_invalid_percentages_fail() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let token = make_token(&env, &admin, 1_000);
+    let start = env.ledger().sequence();
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
+
+    // Percentages sum to 9000 BPS, not 10000.
+    let mut tranches: Vec<(u32, u32)> = Vec::new(&env);
+    tranches.push_back((start + 25, 4_500));
+    tranches.push_back((start + 50, 4_500));
+    let result = client.try_create_tranche_schedule(&beneficiary, &tranches, &1_000i128);
+    assert_eq!(result, Err(Ok(VestingError::InvalidSchedule)));
+}
+
+#[test]
+fn test_milestone_release_by_oracle() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let amount = 1_000i128;
+    let token = make_token(&env, &admin, amount);
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
+    client.set_oracle(&oracle);
+
+    let mut milestones: Vec<(u32, u32)> = Vec::new(&env);
+    milestones.push_back((1, 5_000));
+    milestones.push_back((2, 5_000));
+    client.create_milestone_schedule(&beneficiary, &milestones, &amount);
+
+    // Nothing released until the oracle verifies a milestone.
+    assert_eq!(client.try_claim(&beneficiary), Err(Ok(VestingError::NothingToClaim)));
+
+    client.release_milestone(&beneficiary, &1);
+    assert_eq!(client.claim(&beneficiary), amount * 5_000 / 10_000);
+
+    client.release_milestone(&beneficiary, &2);
+    assert_eq!(client.claim(&beneficiary), amount * 5_000 / 10_000);
+}
+
+#[test]
+fn test_milestone_release_unauthorized_fails() {
+    let env = setup_env();
+    let admin = Address::generate(&env);
+    let beneficiary = Address::generate(&env);
+    let oracle = Address::generate(&env);
+    let amount = 1_000i128;
+    let token = make_token(&env, &admin, amount);
+    let addr = env.register_contract(None, VestingContract);
+    let client = VestingContractClient::new(&env, &addr);
+    client.initialize(&admin, &token);
+    client.set_oracle(&oracle);
+
+    let mut milestones: Vec<(u32, u32)> = Vec::new(&env);
+    milestones.push_back((1, 10_000));
+    client.create_milestone_schedule(&beneficiary, &milestones, &amount);
+
+    // A non-oracle caller cannot release a milestone.
+    env.set_auths(&[]);
+    let result = client.try_release_milestone(&beneficiary, &1);
+    assert!(result.is_err());
 }
