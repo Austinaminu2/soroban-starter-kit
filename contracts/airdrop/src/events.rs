@@ -14,6 +14,13 @@ pub fn claimed(env: &Env, round_id: u32, recipient: &Address, amount: i128) {
     );
 }
 
+pub fn batch_claimed(env: &Env, round_id: u32, recipient: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "batch_claimed"), round_id),
+        (recipient.clone(), amount),
+    );
+}
+
 pub fn unclaimed_swept(env: &Env, round_id: u32, recipient: &Address, amount: i128) {
     env.events().publish(
         (Symbol::new(env, "UnclaimedSwept"), round_id),

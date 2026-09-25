@@ -12,4 +12,6 @@ pub enum AirdropError {
     NothingToSweep = 6,
     InvalidDeadline = 7,
     InvalidAmount = 8,
+    AlreadyClaimed = 9,
+    InvalidProof = 10,
 }
