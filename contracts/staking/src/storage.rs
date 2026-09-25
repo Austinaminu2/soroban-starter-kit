@@ -53,11 +53,16 @@ pub enum DataKey {
     UndistributedRewards,
     /// Per-reward-token: reward tokens deposited while no stake was active.
     UndistributedRewardsFor(Address),
+    /// Penalty applied to emergency unstakes, in basis points (1 bps = 0.01%).
+    EmergencyPenaltyBps,
 }
 
 /// Scaling factor for reward-per-token fixed-point arithmetic.
 /// Using 1e12 gives enough precision for typical token amounts.
 pub const REWARD_SCALE: i128 = 1_000_000_000_000;
+
+/// Basis-point denominator used to convert `EmergencyPenaltyBps` into a fee.
+pub const BPS_DENOMINATOR: i128 = 10_000;
 
 /// Holds the state of an unbonding request for a staker.
 #[contracttype]
