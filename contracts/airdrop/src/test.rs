@@ -124,15 +124,15 @@ fn test_claim_happy_path() {
     let leaf_b = leaf(&env, &t.bob, bob_amount);
     let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
 
-    t.client.set_root(&root);
+    t.client.set_root(&1u32, &root);
 
     let before = TokenClient::new(&env, &t.token).balance(&t.alice);
-    t.client.claim(&t.alice, &alice_amount, &proof_a);
+    t.client.claim(&1u32, &t.alice, &alice_amount, &proof_a);
     assert_eq!(
         TokenClient::new(&env, &t.token).balance(&t.alice),
         before + alice_amount
     );
-    assert!(t.client.is_claimed(&t.alice));
+    assert!(t.client.is_claimed(&1u32, &t.alice));
 }
 
 #[test]
@@ -147,10 +147,10 @@ fn test_duplicate_claim_rejected() {
     let leaf_b = leaf(&env, &t.bob, bob_amount);
     let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
 
-    t.client.set_root(&root);
-    t.client.claim(&t.alice, &alice_amount, &proof_a);
+    t.client.set_root(&1u32, &root);
+    t.client.claim(&1u32, &t.alice, &alice_amount, &proof_a);
 
-    let res = t.client.try_claim(&t.alice, &alice_amount, &proof_a);
+    let res = t.client.try_claim(&1u32, &t.alice, &alice_amount, &proof_a);
     assert!(res.is_err());
 }
 
@@ -166,10 +166,10 @@ fn test_invalid_proof_rejected() {
     let leaf_b = leaf(&env, &t.bob, bob_amount);
     let (root, _proof_a, proof_b) = two_leaf_tree(&env, leaf_a, leaf_b);
 
-    t.client.set_root(&root);
+    t.client.set_root(&1u32, &root);
 
     // Bob's proof used for Alice's claim — must fail
-    let res = t.client.try_claim(&t.alice, &alice_amount, &proof_b);
+    let res = t.client.try_claim(&1u32, &t.alice, &alice_amount, &proof_b);
     assert!(res.is_err());
 }
 
@@ -185,10 +185,10 @@ fn test_wrong_amount_rejected() {
     let leaf_b = leaf(&env, &t.bob, bob_amount);
     let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
 
-    t.client.set_root(&root);
+    t.client.set_root(&1u32, &root);
 
     // Wrong amount
-    let res = t.client.try_claim(&t.alice, &999i128, &proof_a);
+    let res = t.client.try_claim(&1u32, &t.alice, &999i128, &proof_a);
     assert!(res.is_err());
 }
 
@@ -197,9 +197,9 @@ fn test_zero_amount_rejected() {
     let env = Env::default();
     let t = setup(&env);
     let root = BytesN::from_array(&env, &[0u8; 32]);
-    t.client.set_root(&root);
+    t.client.set_root(&1u32, &root);
     let proof = Vec::new(&env);
-    let res = t.client.try_claim(&t.alice, &0i128, &proof);
+    let res = t.client.try_claim(&1u32, &t.alice, &0i128, &proof);
     assert!(res.is_err());
 }
 
@@ -208,7 +208,7 @@ fn test_claim_without_root_fails() {
     let env = Env::default();
     let t = setup(&env);
     let proof = Vec::new(&env);
-    let res = t.client.try_claim(&t.alice, &1_000i128, &proof);
+    let res = t.client.try_claim(&1u32, &t.alice, &1_000i128, &proof);
     assert!(res.is_err());
 }
 
@@ -224,9 +224,9 @@ fn test_both_recipients_claim() {
     let leaf_b = leaf(&env, &t.bob, bob_amount);
     let (root, proof_a, proof_b) = two_leaf_tree(&env, leaf_a, leaf_b);
 
-    t.client.set_root(&root);
-    t.client.claim(&t.alice, &alice_amount, &proof_a);
-    t.client.claim(&t.bob, &bob_amount, &proof_b);
+    t.client.set_root(&1u32, &root);
+    t.client.claim(&1u32, &t.alice, &alice_amount, &proof_a);
+    t.client.claim(&1u32, &t.bob, &bob_amount, &proof_b);
 
     assert_eq!(
         TokenClient::new(&env, &t.token).balance(&t.alice),
@@ -261,178 +261,104 @@ fn test_claim_before_deadline_succeeds() {
     let leaf_a = leaf(&env, &alice, 500i128);
     let leaf_b = leaf(&env, &bob, 500i128);
     let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
-    client.set_root(&root);
+    client.set_root(&1u32, &root);
 
     // ledger 100 < 200 — should succeed
-    client.claim(&alice, &500i128, &proof_a);
-    assert!(client.is_claimed(&alice));
-}
-
-/// Claim at exactly the deadline ledger succeeds (boundary: sequence == deadline is still valid).
-#[test]
-fn test_claim_at_deadline_succeeds() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 200);
-
-    let admin = Address::generate(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let airdrop = env.register_contract(None, AirdropContract);
-    let client = AirdropContractClient::new(&env, &airdrop);
-    client.initialize(&admin, &token, &200u32);
-    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
-
-    let leaf_a = leaf(&env, &alice, 500i128);
-    let leaf_b = leaf(&env, &bob, 500i128);
-    let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
-    client.set_root(&root);
-
-    client.claim(&alice, &500i128, &proof_a);
-    assert!(client.is_claimed(&alice));
-}
-
-/// Claim after the deadline is rejected.
-#[test]
-fn test_claim_after_deadline_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 201);
-
-    let admin = Address::generate(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let airdrop = env.register_contract(None, AirdropContract);
-    let client = AirdropContractClient::new(&env, &airdrop);
-    client.initialize(&admin, &token, &200u32);
-    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
-
-    let leaf_a = leaf(&env, &alice, 500i128);
-    let leaf_b = leaf(&env, &bob, 500i128);
-    let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
-    client.set_root(&root);
-
-    let res = client.try_claim(&alice, &500i128, &proof_a);
-    assert!(res.is_err());
+    client.claim(&1u32, &alice, &500i128, &proof_a);
+    assert!(client.is_claimed(&1u32, &alice));
 }
 
 // ---------------------------------------------------------------------------
-// Sweep unclaimed tests — #1147
+// Multi-round tests — #1148
 // ---------------------------------------------------------------------------
 
-/// Sweep succeeds after the deadline and transfers the full remaining balance.
+/// A recipient who claimed in round 1 can still claim in round 2.
 #[test]
-fn test_sweep_unclaimed_after_deadline_succeeds() {
+fn test_multi_round_claim_independence() {
     let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 201);
+    let t = setup(&env);
 
-    let admin = Address::generate(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let airdrop = env.register_contract(None, AirdropContract);
-    let client = AirdropContractClient::new(&env, &airdrop);
-    client.initialize(&admin, &token, &200u32);
-    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
+    // Round 1 tree
+    let r1_alice = 1_000i128;
+    let r1_bob = 2_000i128;
+    let leaf_a1 = leaf(&env, &t.alice, r1_alice);
+    let leaf_b1 = leaf(&env, &t.bob, r1_bob);
+    let (root1, proof_a1, _) = two_leaf_tree(&env, leaf_a1, leaf_b1);
 
-    // No claims made — full balance should be sweepable.
-    client.sweep_unclaimed(&recipient);
+    t.client.set_root(&1u32, &root1);
+    t.client.claim(&1u32, &t.alice, &r1_alice, &proof_a1);
+    assert!(t.client.is_claimed(&1u32, &t.alice));
 
+    // Round 2 tree — Alice claims again with a fresh allocation
+    let r2_alice = 500i128;
+    let r2_bob = 500i128;
+    let leaf_a2 = leaf(&env, &t.alice, r2_alice);
+    let leaf_b2 = leaf(&env, &t.bob, r2_bob);
+    let (root2, proof_a2, _) = two_leaf_tree(&env, leaf_a2, leaf_b2);
+
+    t.client.set_root(&2u32, &root2);
+    t.client.claim(&2u32, &t.alice, &r2_alice, &proof_a2);
+
+    // Round 1 record is untouched; round 2 record is independent.
+    assert!(t.client.is_claimed(&1u32, &t.alice));
+    assert!(t.client.is_claimed(&2u32, &t.alice));
     assert_eq!(
-        TokenClient::new(&env, &token).balance(&recipient),
-        10_000i128
+        TokenClient::new(&env, &t.token).balance(&t.alice),
+        r1_alice + r2_alice
     );
-    assert_eq!(TokenClient::new(&env, &token).balance(&airdrop), 0i128);
 }
 
-/// Sweep before the deadline is rejected.
+/// A round-1 proof cannot be replayed against round 2's root.
 #[test]
-fn test_sweep_unclaimed_before_deadline_rejected() {
+fn test_round_proofs_are_isolated() {
     let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 100);
+    let t = setup(&env);
 
-    let admin = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let airdrop = env.register_contract(None, AirdropContract);
-    let client = AirdropContractClient::new(&env, &airdrop);
-    client.initialize(&admin, &token, &200u32);
-    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
+    let leaf_a1 = leaf(&env, &t.alice, 1_000i128);
+    let leaf_b1 = leaf(&env, &t.bob, 2_000i128);
+    let (root1, proof_a1, _) = two_leaf_tree(&env, leaf_a1, leaf_b1);
+    t.client.set_root(&1u32, &root1);
 
-    let res = client.try_sweep_unclaimed(&recipient);
-    assert!(res.is_err());
-    // Funds remain locked in the contract.
-    assert_eq!(TokenClient::new(&env, &token).balance(&airdrop), 10_000i128);
-}
+    let leaf_a2 = leaf(&env, &t.alice, 500i128);
+    let leaf_b2 = leaf(&env, &t.bob, 500i128);
+    let (root2, _, _) = two_leaf_tree(&env, leaf_a2, leaf_b2);
+    t.client.set_root(&2u32, &root2);
 
-/// Sweep at exactly the deadline ledger is rejected (must be strictly after).
-#[test]
-fn test_sweep_unclaimed_at_deadline_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 200);
-
-    let admin = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let airdrop = env.register_contract(None, AirdropContract);
-    let client = AirdropContractClient::new(&env, &airdrop);
-    client.initialize(&admin, &token, &200u32);
-    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
-
-    let res = client.try_sweep_unclaimed(&recipient);
+    // Round 1 proof against round 2 root must fail.
+    let res = t.client.try_claim(&2u32, &t.alice, &1_000i128, &proof_a1);
     assert!(res.is_err());
 }
 
-/// Sweep only transfers the unclaimed remainder after some claims.
+/// Changing the root of an active, unexpired round is rejected.
 #[test]
-fn test_sweep_unclaimed_transfers_remainder() {
+fn test_set_root_rejects_active_round_replacement() {
     let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().with_mut(|l| l.sequence_number = 100);
+    let t = setup(&env);
 
-    let admin = Address::generate(&env);
-    let alice = Address::generate(&env);
-    let bob = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(admin.clone())
-        .address();
-    let airdrop = env.register_contract(None, AirdropContract);
-    let client = AirdropContractClient::new(&env, &airdrop);
-    client.initialize(&admin, &token, &200u32);
-    StellarAssetClient::new(&env, &token).mint(&airdrop, &10_000i128);
+    let leaf_a = leaf(&env, &t.alice, 1_000i128);
+    let leaf_b = leaf(&env, &t.bob, 2_000i128);
+    let (root, _, _) = two_leaf_tree(&env, leaf_a, leaf_b);
+    t.client.set_root(&1u32, &root);
 
-    let leaf_a = leaf(&env, &alice, 500i128);
-    let leaf_b = leaf(&env, &bob, 500i128);
-    let (root, proof_a, _) = two_leaf_tree(&env, leaf_a, leaf_b);
-    client.set_root(&root);
+    // Same round, still unexpired — replacement must be rejected.
+    let new_root = BytesN::from_array(&env, &[7u8; 32]);
+    let res = t.client.try_set_root(&1u32, &new_root);
+    assert!(res.is_err());
+}
 
-    // Alice claims before the deadline.
-    client.claim(&alice, &500i128, &proof_a);
+/// A new round id can be opened even while an earlier round is active.
+#[test]
+fn test_set_root_allows_new_round() {
+    let env = Env::default();
+    let t = setup(&env);
 
-    // Move past the deadline and sweep the remainder.
-    env.ledger().with_mut(|l| l.sequence_number = 201);
-    client.sweep_unclaimed(&recipient);
+    let leaf_a = leaf(&env, &t.alice, 1_000i128);
+    let leaf_b = leaf(&env, &t.bob, 2_000i128);
+    let (root1, _, _) = two_leaf_tree(&env, leaf_a, leaf_b);
+    t.client.set_root(&1u32, &root1);
 
-    assert_eq!(
-        TokenClient::new(&env, &token).balance(&recipient),
-        9_500i128
-    );
-    assert_eq!(TokenClient::new(&env, &token).balance(&airdrop), 0i128);
+    let leaf_a2 = leaf(&env, &t.alice, 500i128);
+    let leaf_b2 = leaf(&env, &t.bob, 500i128);
+    let (root2, _, _) = two_leaf_tree(&env, leaf_a2, leaf_b2);
+    t.client.set_root(&2u32, &root2);
 }

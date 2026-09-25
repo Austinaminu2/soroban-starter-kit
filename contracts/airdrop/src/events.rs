@@ -1,18 +1,22 @@
 use soroban_sdk::{Address, Bytes, Env, Symbol};
 
-pub fn root_set(env: &Env, root: &Bytes) {
-    env.events()
-        .publish((Symbol::new(env, "root_set"),), root.clone());
-}
-
-pub fn claimed(env: &Env, recipient: &Address, amount: i128) {
-    env.events()
-        .publish((Symbol::new(env, "claimed"),), (recipient.clone(), amount));
-}
-
-pub fn unclaimed_swept(env: &Env, recipient: &Address, amount: i128) {
+pub fn root_set(env: &Env, round_id: u32, root: &Bytes) {
     env.events().publish(
-        (Symbol::new(env, "UnclaimedSwept"),),
+        (Symbol::new(env, "root_set"), round_id),
+        root.clone(),
+    );
+}
+
+pub fn claimed(env: &Env, round_id: u32, recipient: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "claimed"), round_id),
+        (recipient.clone(), amount),
+    );
+}
+
+pub fn unclaimed_swept(env: &Env, round_id: u32, recipient: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "UnclaimedSwept"), round_id),
         (recipient.clone(), amount),
     );
 }
