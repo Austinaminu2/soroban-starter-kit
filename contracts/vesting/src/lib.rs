@@ -396,6 +396,7 @@ mod contract {
             let claimed = schedule.claimed;
             let revoked = schedule.revoked;
 
+            let vested = vested_amount(amount, cliff_ledger, end_ledger, env.ledger().sequence());
             let now = env.ledger().sequence();
 
             // Determine the effective end of vesting. If the schedule has been
@@ -445,9 +446,16 @@ mod contract {
         /// admin may set the oracle to any address (including a multi-sig
         /// contract) at schedule creation time or later.
             events::claimed(&env, &beneficiary, claimable);
+            let _ = revoked;
             Ok(claimable)
         }
 
+        /// Admin emergency release: unlock all remaining unvested tokens to the
+        /// beneficiary at any point in the schedule (before or after the cliff).
+        ///
+        /// This is intended for protocol migrations or urgent contract upgrades
+        /// where the admin must move remaining tokens out of a deprecated
+        /// contract without waiting for the full multi-year schedule to end.
         /// Revoke a beneficiary's schedule. If a revocation grace period is
         /// configured, the schedule transitions to a pending state and vesting
         /// continues until the delay elapses; otherwise the revocation is applied
@@ -519,6 +527,10 @@ mod contract {
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
         /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
+        /// - [`VestingError::NotAuthorized`] if caller is not the admin.
+        /// - [`VestingError::NothingToClaim`] if no unvested tokens remain.
+        pub fn admin_release(env: Env, beneficiary: Address) -> Result<i128, VestingError> {
+            let admin: Address = env
         /// - [`VestingError::Unauthorized`] if the caller is not the configured oracle.
         /// - [`VestingError::MilestoneAlreadyReleased`] if the milestone was already released.
         pub fn release_milestone(
@@ -542,6 +554,8 @@ mod contract {
                 .get(&DataKey::Token)
                 .ok_or(VestingError::NotInitialized)?;
 
+            admin.require_auth();
+
             let schedule_key = DataKey::Schedule(beneficiary.clone());
             let mut schedule: BeneficiarySchedule = env
                 .storage()
@@ -549,6 +563,13 @@ mod contract {
                 .get(&schedule_key)
                 .ok_or(VestingError::ScheduleNotFound)?;
 
+            // Release all remaining unvested tokens regardless of cliff position.
+            let remaining = schedule.amount - schedule.claimed;
+            if remaining <= 0 {
+                return Err(VestingError::NothingToClaim);
+            }
+
+            schedule.claimed = schedule.amount;
             let oracle = schedule
                 .milestone_oracle
                 .clone()
@@ -566,6 +587,14 @@ mod contract {
             Ok(())
         }
 
+            token::Client::new(&env, &token).transfer(
+                &env.current_contract_address(),
+                &beneficiary,
+                &remaining,
+            );
+
+            events::admin_released(&env, &beneficiary, remaining);
+            Ok(remaining)
         /// Reassign a vesting schedule from `current_beneficiary` to
     
 
