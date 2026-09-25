@@ -32,6 +32,12 @@ pub enum SubscriptionError {
     PlanNotFound = 12,
     /// Plan is not active and cannot be subscribed to.
     PlanInactive = 13,
+    /// Subscription was suspended for non-payment after its grace period expired.
+    SubscriptionSuspended = 14,
+    /// The current billing period is due or overdue and must be charged first.
+    PaymentOverdue = 15,
+    /// An arithmetic operation overflowed.
+    ArithmeticOverflow = 16,
 }
 
 #[cfg(test)]
