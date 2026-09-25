@@ -17,6 +17,9 @@ pub enum VestingError {
     CliffAlreadyPassed = 8,
     ScheduleAlreadyExists = 9,
     ScheduleNotFound = 10,
+    ArithmeticError = 11,
+    ScheduleIrrevocable = 12,
+    BeneficiaryAlreadyExists = 13,
     RevocationPending = 11,
     RevocationNotPending = 12,
     RevocationDelayNotElapsed = 13,
@@ -24,6 +27,19 @@ pub enum VestingError {
 
 impl_display_error!(
     VestingError,
+    AlreadyInitialized    => "already initialized",
+    NotInitialized        => "not initialized",
+    NotAuthorized         => "not authorized",
+    InvalidAmount         => "invalid amount",
+    InvalidSchedule       => "invalid schedule",
+    NothingToClaim        => "nothing to claim",
+    AlreadyRevoked        => "already revoked",
+    CliffAlreadyPassed    => "cliff already passed",
+    ScheduleAlreadyExists => "schedule already exists",
+    ScheduleNotFound      => "schedule not found",
+    ArithmeticError       => "arithmetic error",
+    ScheduleIrrevocable   => "schedule irrevocable",
+    BeneficiaryAlreadyExists => "beneficiary already exists",
     AlreadyInitialized       => "already initialized",
     NotInitialized           => "not initialized",
     NotAuthorized            => "not authorized",
@@ -61,6 +77,9 @@ VestingError::AlreadyRevoked = {}\n\
 VestingError::CliffAlreadyPassed = {}\n\
 VestingError::ScheduleAlreadyExists = {}\n\
 VestingError::ScheduleNotFound = {}\n\
+VestingError::ArithmeticError = {}\n\
+VestingError::ScheduleIrrevocable = {}\n\
+VestingError::BeneficiaryAlreadyExists = {}\n",
 VestingError::RevocationPending = {}\n\
 VestingError::RevocationNotPending = {}\n\
 VestingError::RevocationDelayNotElapsed = {}\n",
@@ -74,6 +93,9 @@ VestingError::RevocationDelayNotElapsed = {}\n",
             VestingError::CliffAlreadyPassed as u32,
             VestingError::ScheduleAlreadyExists as u32,
             VestingError::ScheduleNotFound as u32,
+            VestingError::ArithmeticError as u32,
+            VestingError::ScheduleIrrevocable as u32,
+            VestingError::BeneficiaryAlreadyExists as u32,
             VestingError::RevocationPending as u32,
             VestingError::RevocationNotPending as u32,
             VestingError::RevocationDelayNotElapsed as u32,

@@ -9,7 +9,7 @@
 #[cfg(test)]
 extern crate std;
 
-use soroban_sdk::{Address, Env, contract, contractimpl, token};
+use soroban_sdk::{Address, Env, U256, Vec, contract, contractimpl, token};
 
 mod errors;
 mod events;
@@ -40,12 +40,23 @@ fn bump_schedule(env: &Env, schedule_key: &DataKey) {
 }
 
 /// Returns the number of tokens vested as of `ledger`, ignoring already-claimed tokens.
-pub(crate) fn vested_amount(amount: i128, cliff_ledger: u32, end_ledger: u32, ledger: u32) -> i128 {
+///
+/// Uses 256-bit wide arithmetic for the `amount * elapsed` product so that
+/// large token supplies (e.g. 18-decimal tokens with billions of units) and
+/// long vesting durations cannot overflow. Returns
+/// [`VestingError::ArithmeticError`] if the intermediate product or the final
+/// downcast does not fit in `i128`.
+pub(crate) fn vested_amount(
+    amount: i128,
+    cliff_ledger: u32,
+    end_ledger: u32,
+    ledger: u32,
+) -> Result<i128, VestingError> {
     if ledger < cliff_ledger {
-        return 0;
+        return Ok(0);
     }
     if ledger >= end_ledger {
-        return amount;
+        return Ok(amount);
     }
     // Linear interpolation between cliff and end.
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
@@ -54,7 +65,105 @@ pub(crate) fn vested_amount(amount: i128, cliff_ledger: u32, end_ledger: u32, le
     #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     // u32 ledger difference fits in i128
     let total = (end_ledger - cliff_ledger) as i128;
-    amount * elapsed / total
+
+    // Widen to 256-bit unsigned arithmetic so `amount * elapsed` cannot
+    // overflow for realistic supplies and durations. `amount` is validated
+    // positive by `create_schedule`, so the unsigned conversion is safe.
+    let amount_u = U256::from_u128(&Env::default(), amount as u128);
+    let elapsed_u = U256::from_u128(&Env::default(), elapsed as u128);
+    let total_u = U256::from_u128(&Env::default(), total as u128);
+
+    let product = amount_u
+        .checked_mul(&elapsed_u)
+        .ok_or(VestingError::ArithmeticError)?;
+    let quotient = product
+        .checked_div(&total_u)
+        .ok_or(VestingError::ArithmeticError)?;
+
+    // The result is bounded by `amount` (<= i128::MAX), so the downcast is
+    // exact; guard anyway to surface any unexpected overflow.
+    let result = quotient
+        .to_u128()
+        .ok_or(VestingError::ArithmeticError)?;
+    i128::try_from(result).map_err(|_| VestingError::ArithmeticError)
+}
+
+/// Returns the number of tokens vested as of `ledger` for a tranche-based
+/// schedule, ignoring already-claimed tokens.
+///
+/// `tranches` is a list of `(ledger_sequence, percentage_bps)` pairs. Each
+/// entry releases `percentage_bps` basis points (1/100th of a percent) of the
+/// total `amount` once `ledger` reaches `ledger_sequence`. Percentages are
+/// cumulative across tranches and must sum to at most 10_000 BPS (100%).
+///
+/// Uses 256-bit wide arithmetic for the `amount * bps` product so large token
+/// supplies cannot overflow. Returns [`VestingError::ArithmeticError`] if the
+/// intermediate product or the final downcast does not fit in `i128`.
+pub(crate) fn vested_amount_tranches(
+    amount: i128,
+    tranches: &Vec<(u32, u32)>,
+    ledger: u32,
+) -> Result<i128, VestingError> {
+    let mut vested: i128 = 0;
+    for i in 0..tranches.len() {
+        let (tranche_ledger, bps) = tranches.get(i).ok_or(VestingError::InvalidSchedule)?;
+        if ledger < tranche_ledger {
+            break;
+        }
+        // Widen to 256-bit unsigned arithmetic so `amount * bps` cannot
+        // overflow for realistic supplies. `amount` is validated positive by
+        // `create_schedule`, so the unsigned conversion is safe.
+        let amount_u = U256::from_u128(&Env::default(), amount as u128);
+        let bps_u = U256::from_u128(&Env::default(), bps as u128);
+        let product = amount_u
+            .checked_mul(&bps_u)
+            .ok_or(VestingError::ArithmeticError)?;
+        let ten_thousand = U256::from_u128(&Env::default(), 10_000u128);
+        let quotient = product
+            .checked_div(&ten_thousand)
+            .ok_or(VestingError::ArithmeticError)?;
+        let release = quotient
+            .to_u128()
+            .ok_or(VestingError::ArithmeticError)?;
+        let release = i128::try_from(release).map_err(|_| VestingError::ArithmeticError)?;
+        vested = vested
+            .checked_add(release)
+            .ok_or(VestingError::ArithmeticError)?;
+    }
+    if vested > amount {
+        return Ok(amount);
+    }
+    Ok(vested)
+}
+
+/// Validate a tranche schedule: ledgers strictly increasing, each BPS in
+/// `(0, 10_000]`, and the cumulative BPS not exceeding 10_000 (100%).
+fn validate_tranches(tranches: &Vec<(u32, u32)>, now: u32) -> Result<(), VestingError> {
+    if tranches.is_empty() {
+        return Err(VestingError::InvalidSchedule);
+    }
+    let mut prev_ledger: u32 = 0;
+    let mut total_bps: u32 = 0;
+    for i in 0..tranches.len() {
+        let (tranche_ledger, bps) = tranches.get(i).ok_or(VestingError::InvalidSchedule)?;
+        if bps == 0 || bps > 10_000 {
+            return Err(VestingError::InvalidSchedule);
+        }
+        if i > 0 && tranche_ledger <= prev_ledger {
+            return Err(VestingError::InvalidSchedule);
+        }
+        if tranche_ledger <= now {
+            return Err(VestingError::InvalidSchedule);
+        }
+        total_bps = total_bps
+            .checked_add(bps)
+            .ok_or(VestingError::InvalidSchedule)?;
+        if total_bps > 10_000 {
+            return Err(VestingError::InvalidSchedule);
+        }
+        prev_ledger = tranche_ledger;
+    }
+    Ok(())
 }
 
 fn validate_schedule(cliff_ledger: u32, end_ledger: u32, now: u32) -> Result<(), VestingError> {
@@ -142,6 +251,12 @@ mod contract {
 
         /// Create a new vesting schedule for a beneficiary and transfer `amount` tokens from the caller into the contract.
         ///
+        /// `is_revocable` controls whether the admin may later cancel the
+        /// unvested remainder via [`Self::revoke`]. Pass `false` for
+        /// irrevocable grants (investor agreements, team allocations) where
+        /// the beneficiary requires certainty that the schedule cannot be
+        /// unilaterally cancelled.
+        ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
         /// - [`VestingError::InvalidAmount`] if `amount` <= 0.
@@ -154,6 +269,7 @@ mod contract {
             cliff_ledger: u32,
             end_ledger: u32,
             amount: i128,
+            is_revocable: bool,
         ) -> Result<(), VestingError> {
             let admin: Address = env
                 .storage()
@@ -187,6 +303,10 @@ mod contract {
                 end_ledger,
                 claimed: 0,
                 revoked: false,
+                is_revocable,
+                tranches: Vec::new(&env),
+                milestone_oracle: None,
+                milestone_released: false,
                 revocation_pending: false,
                 revocation_ledger: 0,
             };
@@ -205,8 +325,13 @@ mod contract {
             Ok(())
         }
 
-        /// Release all currently vested, unclaimed tokens to the beneficiary.
+        /// Create a tranche-based vesting schedule for a beneficiary.
         ///
+        /// `tranches` is a list of `(ledger_sequence, percentage_bps)` pairs.
+        /// Each entry releases `percentage_bps` basis points of `amount` once
+        /// the ledger reaches `ledger_sequence`. Ledgers must be strictly
+        /// increasing, each BPS in `(0, 10_000]`, and the cumulative BPS must
+        /// not exceed 10_000 (100%).
         /// After `revoke`, the beneficiary may still claim tokens that were vested
         /// at the time of revocation (the schedule amount is capped at that point).
         /// While a revocation is pending, vesting continues and the beneficiary may
@@ -214,11 +339,19 @@ mod contract {
         ///
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
-        /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
-        /// - [`VestingError::NotAuthorized`] if caller is not the beneficiary.
-        /// - [`VestingError::NothingToClaim`] if no new tokens have vested since the last claim.
-        pub fn claim(env: Env, beneficiary: Address) -> Result<i128, VestingError> {
-            let _admin: Address = env
+        /// - [`VestingError::InvalidAmount`] if `amount` <= 0.
+        /// - [`VestingError::InvalidSchedule`] if `tranches` is empty, unsorted,
+        ///   contains a zero/over-100% BPS, sums above 100%, or references a
+        ///   ledger at or before the current ledger.
+        /// - [`VestingError::ScheduleAlreadyExists`] if a schedule already exists for this beneficiary.
+        pub fn create_tranche_schedule(
+            env: Env,
+            beneficiary: Address,
+            tranches: Vec<(u32, u32)>,
+            amount: i128,
+            is_revocable: bool,
+        ) -> Result<(), VestingError> {
+            let admin: Address = env
                 .storage()
                 .instance()
                 .get(&DataKey::Admin)
@@ -229,17 +362,34 @@ mod contract {
                 .get(&DataKey::Token)
                 .ok_or(VestingError::NotInitialized)?;
 
-            // Only the beneficiary can claim their own tokens
-            beneficiary.require_auth();
+            admin.require_auth();
 
-            // Get the schedule for this beneficiary
+            if amount <= 0 {
+                return Err(VestingError::InvalidAmount);
+            }
+            validate_tranches(&tranches, env.ledger().sequence())?;
+
             let schedule_key = DataKey::Schedule(beneficiary.clone());
-            let mut schedule: BeneficiarySchedule = env
-                .storage()
-                .persistent()
-                .get(&schedule_key)
-                .ok_or(VestingError::ScheduleNotFound)?;
+            if env.storage().persistent().has(&schedule_key) {
+                return Err(VestingError::ScheduleAlreadyExists);
+            }
 
+            let last_ledger = tranches
+                .get(tranches.len() - 1)
+                .ok_or(VestingError::InvalidSchedule)?
+                .0;
+
+            let schedule = BeneficiarySchedule {
+                amount,
+                cliff_ledger: last_ledger,
+                end_ledger: last_ledger,
+                claimed: 0,
+                revoked: false,
+                is_revocable,
+                tranches,
+                milestone_oracle: None,
+                milestone_released: false,
+            };
             let amount = schedule.amount;
             let cliff_ledger = schedule.cliff_ledger;
             let end_ledger = schedule.end_ledger;
@@ -279,11 +429,21 @@ mod contract {
             bump_schedule(&env, &schedule_key);
 
             token::Client::new(&env, &token).transfer(
+                &admin,
                 &env.current_contract_address(),
-                &beneficiary,
-                &claimable,
+                &amount,
             );
 
+            events::initialized(&env, &beneficiary, amount, 0, last_ledger);
+            Ok(())
+        }
+
+        /// Configure a milestone release for a beneficiary's schedule.
+        ///
+        /// `oracle` is the address authorized to call
+        /// [`Self::release_milestone`] once the deliverable is verified. The
+        /// admin may set the oracle to any address (including a multi-sig
+        /// contract) at schedule creation time or later.
             events::claimed(&env, &beneficiary, claimable);
             Ok(claimable)
         }
@@ -296,6 +456,11 @@ mod contract {
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
         /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
+        pub fn set_milestone_oracle(
+            env: Env,
+            beneficiary: Address,
+            oracle: Address,
+        ) -> Result<(), VestingError> {
         /// - [`VestingError::AlreadyRevoked`] if the schedule is already revoked or pending.
         pub fn revoke(env: Env, beneficiary: Address) -> Result<(), VestingError> {
             let admin: Address = env
@@ -312,6 +477,18 @@ mod contract {
                 .get(&schedule_key)
                 .ok_or(VestingError::ScheduleNotFound)?;
 
+            schedule.milestone_oracle = Some(oracle);
+            env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
+            bump_schedule(&env, &schedule_key);
+            Ok(())
+        }
+
+        /// Release the milestone portion of a beneficiary's schedule.
+        ///
+        /// Must be called by the configured milestone oracle (which may be a
+        /// multi-sig contract). Once released, the full `amount` becomes
+        /// vested and claimable by the beneficiary.
             if schedule.revoked || schedule.revocation_pending {
                 return Err(VestingError::AlreadyRevoked);
             }
@@ -342,6 +519,15 @@ mod contract {
         /// # Errors
         /// - [`VestingError::NotInitialized`] if the contract has not been initialized.
         /// - [`VestingError::ScheduleNotFound`] if no schedule exists for the beneficiary.
+        /// - [`VestingError::Unauthorized`] if the caller is not the configured oracle.
+        /// - [`VestingError::MilestoneAlreadyReleased`] if the milestone was already released.
+        pub fn release_milestone(
+            env: Env,
+            beneficiary: Address,
+        ) -> Result<(), VestingError> {
+            if !env.storage().instance().has(&DataKey::Admin) {
+                return Err(VestingError::NotInitialized);
+            }
         /// - [`VestingError::AlreadyRevoked`] if the schedule is not pending revocation.
         /// - [`VestingError::RevocationNotDue`] if the grace period has not elapsed.
         pub fn finalize_revocation(env: Env, beneficiary: Address) -> Result<(), VestingError> {
@@ -363,6 +549,27 @@ mod contract {
                 .get(&schedule_key)
                 .ok_or(VestingError::ScheduleNotFound)?;
 
+            let oracle = schedule
+                .milestone_oracle
+                .clone()
+                .ok_or(VestingError::Unauthorized)?;
+            oracle.require_auth();
+
+            if schedule.milestone_released {
+                return Err(VestingError::MilestoneAlreadyReleased);
+            }
+
+            schedule.milestone_released = true;
+            env.storage().persistent().set(&schedule_key, &schedule);
+            bump(&env);
+            bump_schedule(&env, &schedule_key);
+            Ok(())
+        }
+
+        /// Reassign a vesting schedule from `current_beneficiary` to
+    
+
+/* … truncated 2001 chars — edit only what you need near the top … */
             if schedule.revoked || !schedule.revocation_pending {
                 return Err(VestingError::AlreadyRevoked);
             }
