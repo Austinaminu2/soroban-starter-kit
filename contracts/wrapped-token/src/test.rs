@@ -217,6 +217,56 @@ fn test_initialize_rejects_non_positive_cap() {
 }
 
 // ---------------------------------------------------------------------------
+// unwrap checked arithmetic and reserve guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unwrap_underflow_when_amount_exceeds_supply() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+
+    assert!(client.try_unwrap(&user, &1i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 0);
+
+    client.wrap(&user, &50i128);
+    // Extra wrapped tokens minted outside `wrap`, with matching underlying
+    // donated in, so this fails the supply check rather than the reserve check.
+    token::StellarAssetClient::new(&env, &wrapped_token).mint(&user, &50i128);
+    token::Client::new(&env, &underlying_token).transfer(&user, &client.address, &50i128);
+
+    assert!(client.try_unwrap(&user, &51i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 50);
+
+    client.unwrap(&user, &50i128);
+    assert_eq!(client.get_total_wrapped(), 0);
+}
+
+#[test]
+fn test_unwrap_rejects_when_reserve_is_short() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.wrap(&user, &100i128);
+
+    // Underlying leaves the contract without a matching burn (rebasing / external drain).
+    env.as_contract(&client.address, || {
+        token::Client::new(&env, &underlying_token).transfer(&client.address, &user, &40i128);
+    });
+    assert_eq!(client.get_reserve_balance(), 60);
+    assert!(client.try_unwrap(&user, &61i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    client.unwrap(&user, &60i128);
+    assert_eq!(client.get_total_wrapped(), 40);
+    assert_eq!(client.get_reserve_balance(), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Aggregate unwrap rate limit
 // ---------------------------------------------------------------------------
 

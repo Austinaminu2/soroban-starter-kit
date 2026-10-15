@@ -278,8 +278,9 @@ mod contract {
         /// # Errors
         /// - [`WrappedTokenError::NotInitialized`] if the contract has not been initialized.
         /// - [`WrappedTokenError::Unauthorized`] if the contract is paused (requires the `pausable` feature).
-        /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0.
+        /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0, or if `amount` exceeds the tracked wrapped supply.
         /// - [`WrappedTokenError::InsufficientBalance`] if user has insufficient wrapped tokens.
+        /// - [`WrappedTokenError::InsufficientReserve`] if the contract's underlying balance is below `amount`.
         /// - [`WrappedTokenError::RateLimitExceeded`] if this unwrap would push the
         ///   aggregate amount unwrapped in the current ledger window past
         ///   `max_unwrap_per_window`.
@@ -313,7 +314,18 @@ mod contract {
                 .instance()
                 .get(&DataKey::TotalWrapped)
                 .unwrap_or(0i128);
-            let new_total = total - amount;
+            if total < amount {
+                return Err(WrappedTokenError::InvalidAmount);
+            }
+            let new_total = total
+                .checked_sub(amount)
+                .ok_or(WrappedTokenError::InvalidAmount)?;
+
+            let reserve = token::Client::new(&env, &underlying_token)
+                .balance(&env.current_contract_address());
+            if reserve < amount {
+                return Err(WrappedTokenError::InsufficientReserve);
+            }
 
             // Commit local accounting before making external token calls. Any failed call
             // aborts the transaction and rolls back this effect atomically.
