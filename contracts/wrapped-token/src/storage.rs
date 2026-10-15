@@ -19,6 +19,17 @@ pub enum DataKey {
     /// Persistent storage – cumulative amount wrapped so far by a given
     /// `Address` (`i128`). Only tracked when `MaxWrapPerAddress` is set.
     WrappedByAddress(Address),
+    /// Instance storage – optional cap on the aggregate amount unwrapped
+    /// inside one sliding ledger window (`i128`). Absent means unlimited.
+    UnwrapRateLimit,
+    /// Instance storage – length of the unwrap rate-limit window in ledgers (`u32`).
+    UnwrapRateWindow,
+    /// Instance storage – `(window_start_ledger, amount_unwrapped)` for the
+    /// current unwrap rate-limit window.
+    UnwrapRateUsage,
+    /// Instance storage – when `true`, the unwrap rate limit is paused and
+    /// unwraps are not throttled (admin migration bypass).
+    UnwrapRateLimitPaused,
 }
 
 #[cfg(test)]
@@ -41,6 +52,10 @@ mod discriminant_tests {
             DataKey::Paused => 4,
             DataKey::MaxWrapPerAddress => 5,
             DataKey::WrappedByAddress(_) => 6,
+            DataKey::UnwrapRateLimit => 7,
+            DataKey::UnwrapRateWindow => 8,
+            DataKey::UnwrapRateUsage => 9,
+            DataKey::UnwrapRateLimitPaused => 10,
         }
     }
 
@@ -58,6 +73,13 @@ mod discriminant_tests {
         assert_eq!(
             wrapped_token_data_key_index(&DataKey::WrappedByAddress(addr)),
             6
+        );
+        assert_eq!(wrapped_token_data_key_index(&DataKey::UnwrapRateLimit), 7);
+        assert_eq!(wrapped_token_data_key_index(&DataKey::UnwrapRateWindow), 8);
+        assert_eq!(wrapped_token_data_key_index(&DataKey::UnwrapRateUsage), 9);
+        assert_eq!(
+            wrapped_token_data_key_index(&DataKey::UnwrapRateLimitPaused),
+            10
         );
     }
 }
