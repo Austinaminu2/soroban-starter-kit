@@ -9,6 +9,7 @@
 
 use super::*;
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Ledger as _},
     token,
 };
@@ -264,6 +265,58 @@ fn test_unwrap_rejects_when_reserve_is_short() {
     client.unwrap(&user, &60i128);
     assert_eq!(client.get_total_wrapped(), 40);
     assert_eq!(client.get_reserve_balance(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Proof-of-reserve oracle
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contract]
+struct MockPorOracle;
+
+#[soroban_sdk::contractimpl]
+impl MockPorOracle {
+    pub fn set_reserve(env: Env, reserve: i128) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("reserve"), &reserve);
+    }
+
+    pub fn get_reserve(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("reserve"))
+            .unwrap_or(0)
+    }
+}
+
+#[test]
+fn test_wrap_rejected_when_oracle_reserve_exceeded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+
+    let oracle_id = env.register_contract(None, MockPorOracle);
+    let oracle = MockPorOracleClient::new(&env, &oracle_id);
+    oracle.set_reserve(&150i128);
+    client.set_por_oracle(&Some(oracle_id));
+
+    client.wrap(&user, &100i128);
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    // 100 + 51 > 150
+    assert!(client.try_wrap(&user, &51i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    // Boundary: 100 + 50 == 150 is allowed.
+    client.wrap(&user, &50i128);
+    assert_eq!(client.get_total_wrapped(), 150);
+
+    oracle.set_reserve(&200i128);
+    client.wrap(&user, &40i128);
+    assert_eq!(client.get_total_wrapped(), 190);
 }
 
 // ---------------------------------------------------------------------------

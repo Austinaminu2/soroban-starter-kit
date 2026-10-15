@@ -30,6 +30,9 @@ pub enum DataKey {
     /// Instance storage – when `true`, the unwrap rate limit is paused and
     /// unwraps are not throttled (admin migration bypass).
     UnwrapRateLimitPaused,
+    /// Instance storage – optional proof-of-reserve oracle contract (`Address`).
+    /// Absent means wrapping is not checked against an external reserve.
+    PorOracle,
 }
 
 #[cfg(test)]
@@ -56,6 +59,7 @@ mod discriminant_tests {
             DataKey::UnwrapRateWindow => 8,
             DataKey::UnwrapRateUsage => 9,
             DataKey::UnwrapRateLimitPaused => 10,
+            DataKey::PorOracle => 11,
         }
     }
 
@@ -81,5 +85,6 @@ mod discriminant_tests {
             wrapped_token_data_key_index(&DataKey::UnwrapRateLimitPaused),
             10
         );
+        assert_eq!(wrapped_token_data_key_index(&DataKey::PorOracle), 11);
     }
 }

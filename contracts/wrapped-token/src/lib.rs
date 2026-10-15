@@ -19,6 +19,20 @@ use soroban_common::{
     extend_ttl_persistent,
 };
 
+/// Off-chain or cross-chain reserve oracle. `get_reserve` is the collateral balance.
+#[allow(missing_docs)]
+mod por_oracle {
+    use super::Env;
+
+    #[soroban_sdk::contractclient(name = "PorOracleClient")]
+    #[allow(dead_code)]
+    pub trait PorOracle {
+        fn get_reserve(env: Env) -> i128;
+    }
+}
+
+pub use por_oracle::PorOracleClient;
+
 /// `check_and_record` namespace for the aggregate unwrap rate limit.
 const UNWRAP_RATE_NAMESPACE: u32 = 1;
 
@@ -194,6 +208,8 @@ mod contract {
         /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0.
         /// - [`WrappedTokenError::MaxWrapExceeded`] if `user`'s cumulative wrapped amount would exceed
         ///   the per-address cap set at `initialize`.
+        /// - [`WrappedTokenError::InsufficientReserve`] if a proof-of-reserve oracle is set and
+        ///   `total_wrapped + amount` would exceed the oracle's reserve balance.
         pub fn wrap(env: Env, user: Address, amount: i128) -> Result<(), WrappedTokenError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(WrappedTokenError::NotInitialized);
@@ -248,6 +264,17 @@ mod contract {
                 .get(&DataKey::TotalWrapped)
                 .unwrap_or(0i128);
             let new_total = total + amount;
+
+            if let Some(oracle) = env
+                .storage()
+                .instance()
+                .get::<_, Address>(&DataKey::PorOracle)
+            {
+                let oracle_reserve = PorOracleClient::new(&env, &oracle).get_reserve();
+                if new_total > oracle_reserve {
+                    return Err(WrappedTokenError::InsufficientReserve);
+                }
+            }
 
             // Commit local accounting before making external token calls. Soroban rolls back
             // this transaction if either interaction fails, while this ordering prevents a
@@ -414,6 +441,29 @@ mod contract {
             env.storage()
                 .instance()
                 .set(&DataKey::UnwrapRateWindow, &window_ledgers);
+            bump(&env);
+            Ok(())
+        }
+
+        /// Set or clear the proof-of-reserve oracle. `None` disables the check. Admin only.
+        ///
+        /// # Errors
+        /// - [`WrappedTokenError::NotInitialized`]
+        pub fn set_por_oracle(env: Env, oracle: Option<Address>) -> Result<(), WrappedTokenError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(WrappedTokenError::NotInitialized)?;
+            admin.require_auth();
+            match oracle {
+                Some(oracle) => {
+                    env.storage().instance().set(&DataKey::PorOracle, &oracle);
+                }
+                None => {
+                    env.storage().instance().remove(&DataKey::PorOracle);
+                }
+            }
             bump(&env);
             Ok(())
         }
