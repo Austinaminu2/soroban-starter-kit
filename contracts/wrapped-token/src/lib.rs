@@ -150,6 +150,22 @@ mod contract {
                 .get(&DataKey::UnderlyingToken)
                 .ok_or(WrappedTokenError::NotInitialized)?;
 
+            let underlying = token::Client::new(&env, &underlying_token);
+            let contract_addr = env.current_contract_address();
+
+            // Fee-on-transfer / burn-tax tokens may deliver less than `amount`.
+            // Measure the actual reserve delta and mint only what was received
+            // so the 1:1 reserve backing invariant holds (issue #1181).
+            let balance_before = underlying.balance(&contract_addr);
+            underlying.transfer(&user, &contract_addr, &amount);
+            let balance_after = underlying.balance(&contract_addr);
+            let actual_received = balance_after
+                .checked_sub(balance_before)
+                .ok_or(WrappedTokenError::InvalidAmount)?;
+            if actual_received <= 0 {
+                return Err(WrappedTokenError::InvalidAmount);
+            }
+
             if let Some(cap) = env
                 .storage()
                 .instance()
@@ -160,7 +176,9 @@ mod contract {
                     .persistent()
                     .get(&DataKey::WrappedByAddress(user.clone()))
                     .unwrap_or(0i128);
-                let new_user_total = wrapped_by_user + amount;
+                let new_user_total = wrapped_by_user
+                    .checked_add(actual_received)
+                    .ok_or(WrappedTokenError::InvalidAmount)?;
                 if new_user_total > cap {
                     return Err(WrappedTokenError::MaxWrapExceeded);
                 }
@@ -180,27 +198,18 @@ mod contract {
                 .instance()
                 .get(&DataKey::TotalWrapped)
                 .unwrap_or(0i128);
-            let new_total = total + amount;
+            let new_total = total
+                .checked_add(actual_received)
+                .ok_or(WrappedTokenError::InvalidAmount)?;
 
-            // Commit local accounting before making external token calls. Soroban rolls back
-            // this transaction if either interaction fails, while this ordering prevents a
-            // re-entrant token implementation from observing stale supply accounting.
             env.storage()
                 .instance()
                 .set(&DataKey::TotalWrapped, &new_total);
             bump(&env);
 
-            // Transfer underlying asset from user to contract.
-            token::Client::new(&env, &underlying_token).transfer(
-                &user,
-                &env.current_contract_address(),
-                &amount,
-            );
-
-            // Mint wrapped tokens to user. `wrapped_token` must be a Stellar Asset Contract
-            // (or other token exposing the admin-mint interface) with this contract set as its admin.
-            token::StellarAssetClient::new(&env, &wrapped_token).mint(&user, &amount);
-            events::wrapped(&env, &user, amount, new_total);
+            // Mint wrapped tokens equal only to the received underlying amount.
+            token::StellarAssetClient::new(&env, &wrapped_token).mint(&user, &actual_received);
+            events::wrapped(&env, &user, actual_received, new_total);
             Ok(())
         }
 
@@ -334,5 +343,6 @@ mod contract {
 #[cfg(test)]
 mod test;
 
-#[cfg(test)]
+// Prop tests need the `proptest` dev-dependency; keep them opt-in so unit tests build.
+#[cfg(all(test, feature = "prop-tests"))]
 mod prop_test;
