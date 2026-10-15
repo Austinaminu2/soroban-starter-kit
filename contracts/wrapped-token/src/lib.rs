@@ -250,7 +250,33 @@ mod contract {
                 .instance()
                 .get(&DataKey::TotalWrapped)
                 .unwrap_or(0i128);
-            let new_total = total - amount;
+            let new_total = total
+                .checked_sub(amount)
+                .ok_or(WrappedTokenError::InvalidAmount)?;
+
+            // Decrement per-address wrap quota so unwrap frees capacity for
+            // future wraps (issue #1179). Clamp at zero for safety.
+            if env
+                .storage()
+                .instance()
+                .has(&DataKey::MaxWrapPerAddress)
+            {
+                let wrapped_by_user: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::WrappedByAddress(user.clone()))
+                    .unwrap_or(0i128);
+                let new_user_total = wrapped_by_user.saturating_sub(amount);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::WrappedByAddress(user.clone()), &new_user_total);
+                extend_ttl_persistent(
+                    &env,
+                    &DataKey::WrappedByAddress(user.clone()),
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+            }
 
             // Commit local accounting before making external token calls. Any failed call
             // aborts the transaction and rolls back this effect atomically.

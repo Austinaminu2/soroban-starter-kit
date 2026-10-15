@@ -311,6 +311,45 @@ mod pausable_tests {
 
 
 // ---------------------------------------------------------------------------
+// Per-address wrap quota freed on unwrap (issue #1179)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unwrap_decrements_wrapped_by_user_allowing_rewrap() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+
+    client.wrap(&user, &500i128);
+    assert_eq!(client.wrapped_by(&user), 500);
+    // At cap — further wrap must fail.
+    assert!(client.try_wrap(&user, &1i128).is_err());
+
+    client.unwrap(&user, &200i128);
+    assert_eq!(client.wrapped_by(&user), 300);
+
+    // Freed capacity can be reused.
+    client.wrap(&user, &200i128);
+    assert_eq!(client.wrapped_by(&user), 500);
+    assert_eq!(client.get_total_wrapped(), 500);
+}
+
+#[test]
+fn test_unwrap_clamps_wrapped_by_user_at_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+
+    client.wrap(&user, &100i128);
+    client.unwrap(&user, &100i128);
+    assert_eq!(client.wrapped_by(&user), 0);
+}
+
+// ---------------------------------------------------------------------------
 // Fee-on-transfer underlying (issue #1181)
 // ---------------------------------------------------------------------------
 
