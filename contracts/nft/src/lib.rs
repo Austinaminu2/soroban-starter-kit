@@ -14,7 +14,9 @@ mod storage;
 pub use errors::NftError;
 pub use storage::{DataKey, RoyaltyInfo, TokenKey, TokenMetadata};
 
-use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, apply_bps_fee};
+use soroban_common::{
+    LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, apply_bps_fee, extend_ttl_persistent,
+};
 
 fn bump_instance(env: &Env) {
     env.storage()
@@ -73,9 +75,7 @@ mod contract {
             env.storage().instance().set(&Admin, &admin);
             env.storage().instance().set(&Name, &name);
             env.storage().instance().set(&Symbol, &symbol);
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalSupply, &0u32);
+            env.storage().instance().set(&DataKey::TotalSupply, &0u32);
             if let Some(supply) = max_supply {
                 env.storage().instance().set(&DataKey::MaxSupply, &supply);
             }
@@ -128,11 +128,7 @@ mod contract {
                 .unwrap_or(0);
             let token_id = total.checked_add(1).ok_or(NftError::MaxSupplyReached)?;
 
-            if let Some(max) = env
-                .storage()
-                .instance()
-                .get::<_, u32>(&DataKey::MaxSupply)
-            {
+            if let Some(max) = env.storage().instance().get::<_, u32>(&DataKey::MaxSupply) {
                 if token_id > max {
                     return Err(NftError::MaxSupplyReached);
                 }
@@ -167,10 +163,9 @@ mod contract {
                     .set(&TokenKey::TokenRoyaltyBps(token_id), &bps);
             }
             if let Some(ref recipient) = token_royalty_recipient {
-                env.storage().instance().set(
-                    &TokenKey::TokenRoyaltyRecipient(token_id),
-                    recipient,
-                );
+                let key = TokenKey::TokenRoyaltyRecipient(token_id);
+                env.storage().persistent().set(&key, recipient);
+                extend_ttl_persistent(&env, &key, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
             }
 
             bump_instance(&env);
@@ -213,13 +208,6 @@ mod contract {
                 if bps == 0 {
                     return Ok(None);
                 }
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    clippy::as_conversions,
-                    clippy::cast_possible_truncation,
-                    clippy::integer_division
-                )]
-                let amount = (sale_price * bps as i128) / 10_000;
                 let recipient = token_recipient.ok_or(NftError::RoyaltyRecipientMissing)?;
                 let amount = apply_bps_fee(sale_price, bps).unwrap_or(0);
                 return Ok(Some(RoyaltyInfo { recipient, amount }));
@@ -234,14 +222,8 @@ mod contract {
                 if bps == 0 {
                     return Ok(None);
                 }
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    clippy::as_conversions,
-                    clippy::cast_possible_truncation,
-                    clippy::integer_division
-                )]
-                let amount = (sale_price * bps as i128) / 10_000;
-                let amount = apply_bps_fee(sale_price, bps).unwrap_or(0);
+                #[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+                let amount = (sale_price * i128::from(bps)) / 10_000;
                 return Ok(Some(RoyaltyInfo { recipient, amount }));
             }
 
@@ -303,10 +285,9 @@ mod contract {
                 return Err(NftError::Unauthorized);
             }
 
-            env.storage().instance().set(
-                &TokenKey::Approved(token_id),
-                &spender,
-            );
+            env.storage()
+                .instance()
+                .set(&TokenKey::Approved(token_id), &spender);
             bump_instance(&env);
             events::approved(&env, &owner, &spender, token_id);
             Ok(())
@@ -355,3 +336,6 @@ mod contract {
         }
     }
 }
+
+#[cfg(test)]
+mod royalty_test;
