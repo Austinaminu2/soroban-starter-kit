@@ -25,6 +25,8 @@ features = ["testutils"]
 
 [dependencies.auction]
 path = "../contracts/auction"
+[dependencies.dao]
+path = "../contracts/dao"
 features = ["testutils"]
 
 [[bin]]
@@ -51,6 +53,8 @@ bench = false
 [[bin]]
 name = "auction_fuzz"
 path = "fuzz_targets/auction_fuzz.rs"
+name = "dao_fuzz"
+path = "fuzz_targets/dao_fuzz.rs"
 test = false
 doc = false
 bench = false

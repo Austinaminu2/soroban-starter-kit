@@ -15,6 +15,7 @@ pub enum TimelockError {
     AlreadyCancelled = 6,
     InvalidAmount = 7,
     InvalidReleaseLedger = 8,
+    TrancheAlreadyReleased = 9,
 }
 
 impl_display_error!(
@@ -27,6 +28,7 @@ impl_display_error!(
     AlreadyCancelled    => "already cancelled",
     InvalidAmount       => "invalid amount",
     InvalidReleaseLedger => "invalid release ledger",
+    TrancheAlreadyReleased => "tranche already released",
 );
 
 #[cfg(test)]
@@ -48,7 +50,8 @@ TimelockError::NotYetReleasable = {}\n\
 TimelockError::AlreadyReleased = {}\n\
 TimelockError::AlreadyCancelled = {}\n\
 TimelockError::InvalidAmount = {}\n\
-TimelockError::InvalidReleaseLedger = {}\n",
+TimelockError::InvalidReleaseLedger = {}\n\
+TimelockError::TrancheAlreadyReleased = {}\n",
             TimelockError::NotAuthorized as u32,
             TimelockError::AlreadyInitialized as u32,
             TimelockError::NotInitialized as u32,
@@ -57,6 +60,7 @@ TimelockError::InvalidReleaseLedger = {}\n",
             TimelockError::AlreadyCancelled as u32,
             TimelockError::InvalidAmount as u32,
             TimelockError::InvalidReleaseLedger as u32,
+            TimelockError::TrancheAlreadyReleased as u32,
         )
     }
 
