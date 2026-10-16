@@ -102,6 +102,38 @@ pub fn account_unfrozen(env: &Env, account: &Address) {
         .publish((Symbol::new(env, "account_unfrozen"), account.clone()), ());
 }
 
+/// Emitted when an account is permanently blacklisted.
+/// Topics: (Symbol, Address) — event name, account
+pub fn account_blacklisted(env: &Env, account: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "account_blacklisted"), account.clone()),
+        (),
+    );
+}
+
+/// Emitted when an account is removed from the blacklist.
+/// Topics: (Symbol, Address) — event name, account
+pub fn account_unblacklisted(env: &Env, account: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "account_unblacklisted"), account.clone()),
+        (),
+    );
+}
+
+/// Emitted when blacklisted funds are confiscated to the compliance treasury.
+/// Topics: (Symbol, Address, Address) — event name, from, treasury
+/// Data: amount
+pub fn compliance_confiscated(env: &Env, from: &Address, treasury: &Address, amount: i128) {
+    env.events().publish(
+        (
+            Symbol::new(env, "compliance_confiscated"),
+            from.clone(),
+            treasury.clone(),
+        ),
+        amount,
+    );
+}
+
 /// Emitted when the contract is paused.
 /// Topics: (Symbol, Address) — event name, admin
 pub fn paused(env: &Env, admin: &Address) {

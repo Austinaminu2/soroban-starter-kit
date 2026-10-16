@@ -59,6 +59,19 @@ pub(crate) fn require_not_frozen(env: &Env, account: &Address) -> Result<(), Tok
     Ok(())
 }
 
+#[cfg(feature = "freeze")]
+pub(crate) fn require_not_blacklisted(env: &Env, account: &Address) -> Result<(), TokenError> {
+    if env
+        .storage()
+        .persistent()
+        .get(&DataKey::Blacklisted(account.clone()))
+        .unwrap_or(false)
+    {
+        return Err(TokenError::Unauthorized);
+    }
+    Ok(())
+}
+
 pub use contract::*;
 
 // The `#[contract]` / `#[contractimpl]` macros generate an undocumented public
@@ -518,6 +531,79 @@ mod contract {
             events::account_unfrozen(&env, &account);
             Ok(())
         }
+
+        /// Permanently blacklist `account` (distinct from a temporary freeze).
+        pub fn blacklist(env: Env, account: Address) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Blacklisted(account.clone()), &true);
+            extend_ttl_persistent(
+                &env,
+                &DataKey::Blacklisted(account.clone()),
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+            events::account_blacklisted(&env, &account);
+            Ok(())
+        }
+
+        /// Remove `account` from the permanent blacklist.
+        pub fn unblacklist(env: Env, account: Address) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Blacklisted(account.clone()));
+            events::account_unblacklisted(&env, &account);
+            Ok(())
+        }
+
+        /// Returns whether `account` is permanently blacklisted.
+        pub fn is_blacklisted(env: Env, account: Address) -> bool {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Blacklisted(account))
+                .unwrap_or(false)
+        }
+
+        /// Set the compliance treasury that receives confiscated blacklisted funds.
+        pub fn set_compliance_treasury(env: Env, treasury: Address) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            env.storage()
+                .instance()
+                .set(&DataKey::ComplianceTreasury, &treasury);
+            extend_ttl_instance(&env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            Ok(())
+        }
+
+        /// Confiscate `amount` from a blacklisted account to the compliance treasury.
+        pub fn confiscate_blacklisted(
+            env: Env,
+            account: Address,
+            amount: i128,
+        ) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            if amount <= 0 {
+                return Err(TokenError::InvalidAmount);
+            }
+            if !Self::is_blacklisted(env.clone(), account.clone()) {
+                return Err(TokenError::Unauthorized);
+            }
+            let treasury: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::ComplianceTreasury)
+                .ok_or(TokenError::NotInitialized)?;
+            Self::update_balance(&env, &account, -amount)?;
+            Self::update_balance(&env, &treasury, amount)?;
+            extend_ttl_instance(&env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            events::compliance_confiscated(&env, &account, &treasury, amount);
+            Ok(())
+        }
     }
 
     /// Upgrade path — only compiled when the `upgradeable` feature is enabled.
@@ -704,6 +790,10 @@ mod contract {
             }
             #[cfg(feature = "freeze")]
             if let Err(e) = require_not_frozen(env, &from) {
+                return Err(e);
+            }
+            #[cfg(feature = "freeze")]
+            if let Err(e) = require_not_blacklisted(env, &from) {
                 return Err(e);
             }
 

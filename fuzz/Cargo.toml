@@ -27,6 +27,12 @@ features = ["testutils"]
 path = "../contracts/crowdfund"
 features = ["testutils"]
 
+[dependencies.auction]
+path = "../contracts/auction"
+[dependencies.dao]
+path = "../contracts/dao"
+features = ["testutils"]
+
 [[bin]]
 name = "multisig_state_machine"
 path = "fuzz_targets/multisig_state_machine.rs"
@@ -51,6 +57,15 @@ bench = false
 [[bin]]
 name = "crowdfund_state_machine"
 path = "fuzz_targets/crowdfund_state_machine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "auction_fuzz"
+path = "fuzz_targets/auction_fuzz.rs"
+name = "dao_fuzz"
+path = "fuzz_targets/dao_fuzz.rs"
 test = false
 doc = false
 bench = false

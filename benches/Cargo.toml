@@ -18,12 +18,92 @@ harness = false
 name = "merkle_ops"
 harness = false
 
+[[bench]]
+name = "swap_ops"
+harness = false
+
+[[bench]]
+name = "staking_ops"
+harness = false
+
+[[bench]]
+name = "vesting_ops"
+harness = false
+
+[[bench]]
+name = "dao_ops"
+harness = false
+
+[[bench]]
+name = "multisig_ops"
+harness = false
+
+[[bench]]
+name = "marketplace_ops"
+harness = false
+
+[[bench]]
+name = "auction_ops"
+harness = false
+
+[[bench]]
+name = "airdrop_ops"
+harness = false
+
+[[bench]]
+name = "ballot_ops"
+harness = false
+
+[[bench]]
+name = "bonding_curve_ops"
+harness = false
+
+[[bench]]
+name = "crowdfund_ops"
+harness = false
+
+[[bench]]
+name = "lottery_ops"
+harness = false
+
+[[bench]]
+name = "nft_ops"
+harness = false
+
+[[bench]]
+name = "oracle_ops"
+harness = false
+
+[[bench]]
+name = "subscription_ops"
+harness = false
+
+[[bench]]
+name = "timelock_ops"
+harness = false
+
 [dev-dependencies]
 criterion = { workspace = true }
 soroban-common = { workspace = true }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 soroban-escrow-template = { path = "../contracts/escrow" }
 soroban-token-template = { path = "../contracts/token" }
+soroban-swap = { path = "../contracts/swap" }
+soroban-staking = { path = "../contracts/staking" }
+soroban-vesting = { path = "../contracts/vesting" }
+soroban-dao = { path = "../contracts/dao" }
+soroban-multisig = { path = "../contracts/multisig" }
+soroban-marketplace = { path = "../contracts/marketplace" }
+soroban-auction = { path = "../contracts/auction" }
+soroban-airdrop = { path = "../contracts/airdrop" }
+soroban-ballot = { path = "../contracts/ballot" }
+soroban-bonding-curve = { path = "../contracts/bonding_curve" }
+soroban-crowdfund = { path = "../contracts/crowdfund" }
+soroban-lottery = { path = "../contracts/lottery" }
+soroban-nft = { path = "../contracts/nft" }
+soroban-oracle = { path = "../contracts/oracle" }
+soroban-subscription = { path = "../contracts/subscription" }
+soroban-timelock = { path = "../contracts/timelock" }
 
 [lints]
 workspace = true

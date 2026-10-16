@@ -391,22 +391,81 @@ pub fn extend_deadline(env: Env, new_deadline: u32) -> Result<(), EscrowError> {
     Ok(())
 }
 
+/// Remaining funds eligible for release/refund/dispute resolution.
+///
+/// For multi-milestone escrows the disputable pool is the sum of **unreleased**
+/// milestone amounts (already-released milestones are excluded). The stored
+/// [`Amount`] is synced to that remainder so payouts cannot exceed what is
+/// still held in the contract.
+fn sync_disputable_amount(env: &Env) -> Result<i128, EscrowError> {
+    let stored: i128 = get_required(env, &Amount)?;
+    let Some(milestones) = env
+        .storage()
+        .instance()
+        .get::<DataKey, Vec<Milestone>>(&DataKey::Milestones)
+    else {
+        return Ok(stored);
+    };
+
+    let mut unreleased: i128 = 0;
+    for m in milestones.iter() {
+        if !m.released {
+            unreleased = unreleased
+                .checked_add(m.amount)
+                .ok_or(EscrowError::InsufficientFunds)?;
+        }
+    }
+
+    if unreleased != stored {
+        env.storage().instance().set(&Amount, &unreleased);
+    }
+    Ok(unreleased)
+}
+
+/// Mark every remaining milestone as released after a full settlement payout.
+fn mark_all_milestones_released(env: &Env) {
+    let Some(mut milestones) = env
+        .storage()
+        .instance()
+        .get::<DataKey, Vec<Milestone>>(&DataKey::Milestones)
+    else {
+        return;
+    };
+    for i in 0..milestones.len() {
+        if let Some(mut m) = milestones.get(i) {
+            if !m.released {
+                m.released = true;
+                milestones.set(i, m);
+            }
+        }
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::Milestones, &milestones);
+}
+
 pub fn release_to_seller(env: Env) -> Result<(), EscrowError> {
     require_state(&env, EscrowState::Delivered)?;
 
     let seller: Address = get_required(&env, &Seller)?;
-    let amount: i128 = get_required(&env, &Amount)?;
+    // Only redistribute unreleased remainder (issue #1189).
+    let amount: i128 = sync_disputable_amount(&env)?;
 
     env.storage()
         .instance()
         .set(&State, &EscrowState::Completed);
+    env.storage().instance().set(&Amount, &0i128);
+    mark_all_milestones_released(&env);
     extend_ttl(&env);
 
-    let (net, fee) = apply_fee(&env, amount);
-    admin::transfer_token(&env, &env.current_contract_address(), &seller, net);
-    maybe_pay_fee(&env, fee);
-
-    events::funds_released(&env, &seller, net, fee);
+    if amount > 0 {
+        let (net, fee) = apply_fee(&env, amount);
+        admin::transfer_token(&env, &env.current_contract_address(), &seller, net);
+        maybe_pay_fee(&env, fee);
+        events::funds_released(&env, &seller, net, fee);
+    } else {
+        events::funds_released(&env, &seller, 0, 0);
+    }
 
     Ok(())
 }
@@ -415,12 +474,17 @@ pub fn refund_to_buyer(env: Env) -> Result<(), EscrowError> {
     require_state(&env, EscrowState::Funded)?;
 
     let buyer: Address = get_required(&env, &Buyer)?;
-    let amount: i128 = get_required(&env, &Amount)?;
+    // Only redistribute unreleased remainder (issue #1189).
+    let amount: i128 = sync_disputable_amount(&env)?;
 
     env.storage().instance().set(&State, &EscrowState::Refunded);
+    env.storage().instance().set(&Amount, &0i128);
+    mark_all_milestones_released(&env);
     extend_ttl(&env);
 
-    admin::transfer_token(&env, &env.current_contract_address(), &buyer, amount);
+    if amount > 0 {
+        admin::transfer_token(&env, &env.current_contract_address(), &buyer, amount);
+    }
 
     events::funds_refunded(&env, &buyer, amount);
 
