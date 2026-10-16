@@ -17,12 +17,9 @@ use soroban_sdk::{Address, Bytes, BytesN, Env, contracttype, crypto::Hash};
 
 pub mod math;
 pub mod merkle;
-pub mod reentrancy_guard;
-
-pub use reentrancy_guard::{ReentrancyGuard, with_guard};
 
 pub use math::{
-    FixedPoint, FixedPoint128, FixedPointError, from_scale, mul_div, mul_div_nearest, mul_div_up,
+    FixedPoint128, FixedPointError, from_scale, mul_div, mul_div_nearest, mul_div_up,
     to_scale,
 };
 pub use merkle::{hash_pair_sorted, verify_merkle_multi_proof, verify_merkle_proof};
@@ -799,9 +796,9 @@ impl<'a> ReentrancyGuard<'a> {
     ///
     /// Panics with `"reentrancy detected"` when the lock flag is already set.
     #[must_use]
+    #[allow(clippy::panic)] // intentional panic: reentrancy intercepted
     pub fn enter(env: &'a Env) -> Self {
         if Self::is_locked(env) {
-            #[allow(clippy::panic)] // intentional panic: reentrancy intercepted
             panic!("reentrancy detected");
         }
         env.storage().instance().set(&ReentrancyKey::Locked, &true);
@@ -891,6 +888,8 @@ mod reentrancy_guard {
         Locked,
     }
 }
+
+use reentrancy_guard::ReentrancyKey;
 
 #[cfg(test)]
 mod reentrancy_guard_tests {

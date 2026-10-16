@@ -19,6 +19,10 @@ pub enum DataKey {
     PrizeSplits,
     MaxTicketsPerAddress,
     TicketCount(Address),
+    /// Fee in basis points (0–9999) deducted from the prize pool before winner payouts.
+    FeeBps,
+    /// Recipient address for the fee amount.
+    FeeRecipient,
 }
 
 #[contracttype]
