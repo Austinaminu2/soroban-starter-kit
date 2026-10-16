@@ -409,6 +409,20 @@ fn setup_multi_tranche(
     first_ledger: u32,
     spacing: u32,
 ) -> (TimelockContractClient, Address, Address, Address, SdkVec<ReleaseTranche>) {
+// ── Mutual tranche rescheduling tests ────────────────────────────────────
+
+fn setup_with_tranches(
+    env: &Env,
+) -> (
+    TimelockContractClient,
+    Address,
+    Address,
+    Address,
+    u32,
+    u32,
+) {
+    use soroban_sdk::Vec as SdkVec;
+
     let admin = Address::generate(env);
     let beneficiary = Address::generate(env);
     let token = env.register_contract(None, MockToken);
@@ -554,4 +568,93 @@ fn test_persistent_tranche_lookup_extends_ttl() {
     env.ledger().with_mut(|l| l.sequence_number = later_ledger);
     client.release();
     assert_eq!(client.get_info().state, TimelockState::Released);
+    let ledger1 = env.ledger().sequence() + 50;
+    let ledger2 = env.ledger().sequence() + 100;
+
+    let mut tranches = SdkVec::new(env);
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger1,
+        amount: 500,
+    });
+    tranches.push_back(ReleaseTranche {
+        release_ledger: ledger2,
+        amount: 500,
+    });
+
+    client.initialize_with_tranches(&admin, &token, &beneficiary, &tranches);
+
+    (client, admin, beneficiary, token, ledger1, ledger2)
+}
+
+#[test]
+fn test_reschedule_tranche_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, ledger1, _) = setup_with_tranches(&env);
+
+    let new_release_ledger = ledger1 + 25;
+    client.reschedule_tranche(&0, &new_release_ledger);
+
+    let info = client.get_info();
+    assert_eq!(info.tranches.get(0).unwrap().release_ledger, new_release_ledger);
+    assert_eq!(info.state, TimelockState::Active);
+
+    // A TrancheRescheduled event must have been emitted.
+    let events = env.events().all();
+    let found = events.iter().any(|(_, topics, _)| {
+        topics
+            .iter()
+            .any(|t| t == &TrancheRescheduled { tranche_id: 0, new_release_ledger }.into())
+    });
+    assert!(found, "TrancheRescheduled event not emitted");
+}
+
+#[test]
+#[should_panic]
+fn test_reschedule_tranche_requires_both_parties() {
+    let env = Env::default();
+
+    let (client, admin, _, _, ledger1, _) = setup_with_tranches(&env);
+
+    // Only the admin authorizes; the beneficiary does not.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "reschedule_tranche",
+            args: (0u32, ledger1 + 25u32).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    client.reschedule_tranche(&0, &(ledger1 + 25));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_reschedule_released_tranche_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, ledger1, _) = setup_with_tranches(&env);
+
+    // Release the first tranche.
+    env.ledger().with_mut(|l| l.sequence_number = ledger1);
+    client.release();
+
+    // Attempting to reschedule an already-released tranche must fail.
+    client.reschedule_tranche(&0, &(ledger1 + 50));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_reschedule_tranche_invalid_ledger_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, ledger1, _) = setup_with_tranches(&env);
+
+    // new_release_ledger must be strictly greater than the current ledger.
+    client.reschedule_tranche(&0, &ledger1);
 }

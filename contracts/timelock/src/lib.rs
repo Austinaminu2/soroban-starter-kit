@@ -14,6 +14,9 @@ mod errors;
 mod events;
 mod storage;
 
+#[cfg(test)]
+mod test;
+
 pub use errors::TimelockError;
 pub use storage::{DataKey, ReleaseTranche, TimelockInfo, TimelockState};
 
@@ -337,6 +340,57 @@ mod contract {
             Ok(())
         }
 
+        /// Reschedule an unreleased tranche to a new release ledger.
+        ///
+        /// Requires mutual authorization from both the admin and the beneficiary.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TimelockError::NotInitialized`] if not yet set up.
+        /// Returns [`TimelockError::NotAuthorized`] if either party fails authorization.
+        /// Returns [`TimelockError::TrancheAlreadyReleased`] if the tranche was already released.
+        /// Returns [`TimelockError::InvalidReleaseLedger`] if `new_release_ledger` <= current ledger.
+        pub fn reschedule_tranche(
+            env: Env,
+            tranche_id: u32,
+            new_release_ledger: u32,
+        ) -> Result<(), TimelockError> {
+            let admin: Address = get_required(&env, &Admin)?;
+            let beneficiary: Address = get_required(&env, &Beneficiary)?;
+
+            // Mutual authorization: both admin and beneficiary must approve.
+            admin.require_auth();
+            beneficiary.require_auth();
+
+            let mut tranches: Vec<ReleaseTranche> = get_required(&env, &Tranches)?;
+            let mut released: Vec<bool> = get_required(&env, &ReleasedTranches)?;
+
+            if tranche_id >= tranches.len() {
+                return Err(TimelockError::InvalidAmount);
+            }
+
+            if released.get(tranche_id).unwrap() {
+                return Err(TimelockError::TrancheAlreadyReleased);
+            }
+
+            if new_release_ledger <= env.ledger().sequence() {
+                return Err(TimelockError::InvalidReleaseLedger);
+            }
+
+            let old_ledger = tranches.get(tranche_id).unwrap().release_ledger;
+            let mut tranche = tranches.get(tranche_id).unwrap();
+            tranche.release_ledger = new_release_ledger;
+            tranches.set(tranche_id, tranche);
+
+            env.storage().instance().set(&Tranches, &tranches);
+            env.storage().instance().set(&ReleasedTranches, &released);
+            bump_instance(&env);
+
+            events::tranche_rescheduled(&env, tranche_id, old_ledger, new_release_ledger);
+
+            Ok(())
+        }
+
         /// Admin-only: reassign the beneficiary while the timelock is active.
         ///
         /// # Errors
@@ -440,8 +494,6 @@ mod contract {
         }
     }
 }
-
-mod test;
 
 #[cfg(test)]
 mod prop_test;

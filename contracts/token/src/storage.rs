@@ -35,6 +35,12 @@ pub enum DataKey {
     /// previously signed permit can no longer be applied (`bool` per
     /// `(Address, u32)`).
     CancelledPermitNonce(Address, u32),
+    /// Persistent storage – permanently blacklisted accounts (`bool` per address).
+    /// Distinct from temporary [`DataKey::Frozen`] investigative freezes (issue #1178).
+    Blacklisted(Address),
+    /// Instance storage – compliance treasury address that receives confiscated
+    /// balances from blacklisted accounts (`Address`).
+    ComplianceTreasury,
 }
 
 #[contracttype]
@@ -88,6 +94,8 @@ mod discriminant_tests {
             DataKey::PermitSigner(_) => 13,
             DataKey::PermitNonce(_) => 14,
             DataKey::CancelledPermitNonce(_, _) => 15,
+            DataKey::Blacklisted(_) => 16,
+            DataKey::ComplianceTreasury => 17,
         }
     }
 
@@ -133,9 +141,11 @@ mod discriminant_tests {
         );
         assert_eq!(token_data_key_index(&DataKey::PermitNonce(addr.clone())), 14);
         assert_eq!(
-            token_data_key_index(&DataKey::CancelledPermitNonce(addr, 0u32)),
+            token_data_key_index(&DataKey::CancelledPermitNonce(addr.clone(), 0u32)),
             15
         );
+        assert_eq!(token_data_key_index(&DataKey::Blacklisted(addr)), 16);
+        assert_eq!(token_data_key_index(&DataKey::ComplianceTreasury), 17);
     }
 
     #[test]
