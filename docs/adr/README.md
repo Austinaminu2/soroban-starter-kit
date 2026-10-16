@@ -20,6 +20,9 @@ For general reference documentation (development environment, deployment guides,
 | [0008](0008-multisig-arbiter-design.md) | Multi-sig Arbiter Design | Accepted |
 | [0009](0009-batch-mint-design.md) | Batch Mint Design — Atomicity & Cap Enforcement | Accepted |
 | [0010](0010-no-serde-wasm-targets.md) | No serde — use soroban-sdk native types only | Accepted |
+| [0011](0011-bonding-curve-state-machine.md) | Bonding-Curve State Machine Design | Accepted |
+| [0012](0012-subscription-state-machine.md) | Subscription State Machine Design | Accepted |
+| [0013](0013-wrapped-token-state-machine.md) | Wrapped-Token State Machine Design | Accepted |
 
 ## Format
 
