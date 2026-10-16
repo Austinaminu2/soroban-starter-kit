@@ -39,6 +39,34 @@ pub fn beneficiary_reassigned(env: &Env, admin: &Address, old_beneficiary: &Addr
     );
 }
 
+pub fn deposited(env: &Env, staking_contract: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "deposited"), staking_contract.clone()),
+        amount,
+    );
+}
+
+pub fn withdrawn(env: &Env, staking_contract: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "withdrawn"), staking_contract.clone()),
+        amount,
+    );
+}
+
+pub fn yield_distributed(
+    env: &Env,
+    beneficiary: &Address,
+    principal: i128,
+    yield_recipient: &Address,
+    yield_amount: i128,
+) {
+    env.events().publish(
+        (
+            Symbol::new(env, "yield_distributed"),
+            beneficiary.clone(),
+            yield_recipient.clone(),
+        ),
+        (principal, yield_amount),
 pub fn tranche_rescheduled(env: &Env, tranche_id: u32, old_ledger: u32, new_ledger: u32) {
     env.events().publish(
         (Symbol::new(env, "tranche_rescheduled"), tranche_id),
