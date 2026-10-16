@@ -32,6 +32,14 @@ pub enum DataKey {
     Tranches,
     /// Bitmask tracking which tranches have been released (index -> true/false).
     ReleasedTranches,
+    /// Optional authorized staking contract for yield generation.
+    StakingContract,
+    /// Address that receives accrued yield on release.
+    YieldRecipient,
+    /// Whether the locked balance has been deposited into staking.
+    Deposited,
+    /// Principal currently deposited in the staking contract.
+    StakedAmount,
 }
 
 #[contracttype]
@@ -65,4 +73,10 @@ pub struct TimelockInfo {
     pub state: TimelockState,
     /// List of tranches (empty for legacy single-tranche timelocks).
     pub tranches: Vec<ReleaseTranche>,
+    /// Optional authorized staking contract for yield generation.
+    pub staking_contract: Option<Address>,
+    /// Address that receives accrued yield on release.
+    pub yield_recipient: Option<Address>,
+    /// Whether the locked balance has been deposited into staking.
+    pub deposited: bool,
 }

@@ -15,6 +15,10 @@ pub enum TimelockError {
     AlreadyCancelled = 6,
     InvalidAmount = 7,
     InvalidReleaseLedger = 8,
+    StakingNotConfigured = 9,
+    AlreadyDeposited = 10,
+    NotDeposited = 11,
+    StakingCallFailed = 12,
 }
 
 impl_display_error!(
@@ -27,6 +31,10 @@ impl_display_error!(
     AlreadyCancelled    => "already cancelled",
     InvalidAmount       => "invalid amount",
     InvalidReleaseLedger => "invalid release ledger",
+    StakingNotConfigured => "staking not configured",
+    AlreadyDeposited    => "already deposited",
+    NotDeposited        => "not deposited",
+    StakingCallFailed   => "staking call failed",
 );
 
 #[cfg(test)]
@@ -48,7 +56,11 @@ TimelockError::NotYetReleasable = {}\n\
 TimelockError::AlreadyReleased = {}\n\
 TimelockError::AlreadyCancelled = {}\n\
 TimelockError::InvalidAmount = {}\n\
-TimelockError::InvalidReleaseLedger = {}\n",
+TimelockError::InvalidReleaseLedger = {}\n\
+TimelockError::StakingNotConfigured = {}\n\
+TimelockError::AlreadyDeposited = {}\n\
+TimelockError::NotDeposited = {}\n\
+TimelockError::StakingCallFailed = {}\n",
             TimelockError::NotAuthorized as u32,
             TimelockError::AlreadyInitialized as u32,
             TimelockError::NotInitialized as u32,
@@ -57,6 +69,10 @@ TimelockError::InvalidReleaseLedger = {}\n",
             TimelockError::AlreadyCancelled as u32,
             TimelockError::InvalidAmount as u32,
             TimelockError::InvalidReleaseLedger as u32,
+            TimelockError::StakingNotConfigured as u32,
+            TimelockError::AlreadyDeposited as u32,
+            TimelockError::NotDeposited as u32,
+            TimelockError::StakingCallFailed as u32,
         )
     }
 
