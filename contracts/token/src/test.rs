@@ -1826,3 +1826,83 @@ mod permit_tests {
         }
     }
 }
+
+
+// ── blacklist vs freeze (issue #1178) ───────────────────────────────────────────
+
+#[cfg(feature = "freeze")]
+mod blacklist_tests {
+    use super::*;
+
+    #[test]
+    fn test_blacklist_blocks_transfer_unlike_unfrozen() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let client = init_token(&env, &admin);
+
+        client.mint(&user, &1000i128);
+        client.blacklist(&user);
+        assert!(client.is_blacklisted(&user));
+        assert!(client.try_transfer(&user, &recipient, &100i128).is_err());
+    }
+
+    #[test]
+    fn test_freeze_and_blacklist_are_independent() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let client = init_token(&env, &admin);
+
+        client.mint(&user, &1000i128);
+        client.freeze_account(&user);
+        client.unfreeze_account(&user);
+        // Unfreeze does not clear a blacklist.
+        client.blacklist(&user);
+        assert!(client.is_blacklisted(&user));
+        assert!(client.try_transfer(&user, &recipient, &50i128).is_err());
+
+        client.unblacklist(&user);
+        assert!(!client.is_blacklisted(&user));
+        client.transfer(&user, &recipient, &50i128);
+        assert_eq!(client.balance(&recipient), 50i128);
+    }
+
+    #[test]
+    fn test_confiscate_blacklisted_to_compliance_treasury() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let client = init_token(&env, &admin);
+
+        client.mint(&user, &1000i128);
+        client.set_compliance_treasury(&treasury);
+        client.blacklist(&user);
+        client.confiscate_blacklisted(&user, &400i128);
+
+        assert_eq!(client.balance(&user), 600i128);
+        assert_eq!(client.balance(&treasury), 400i128);
+    }
+
+    #[test]
+    fn test_confiscate_requires_blacklist() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let client = init_token(&env, &admin);
+
+        client.mint(&user, &1000i128);
+        client.set_compliance_treasury(&treasury);
+        // Frozen but not blacklisted — confiscate must fail.
+        client.freeze_account(&user);
+        assert!(client.try_confiscate_blacklisted(&user, &100i128).is_err());
+    }
+}

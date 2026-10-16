@@ -15,6 +15,9 @@ pub use errors::NftError;
 pub use storage::{DataKey, RoyaltyInfo, TokenKey, TokenMetadata};
 
 use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
+use soroban_common::{
+    LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, apply_bps_fee, extend_ttl_persistent,
+};
 
 fn bump_instance(env: &Env) {
     env.storage()
@@ -149,6 +152,12 @@ mod contract {
                 env.storage()
                     .instance()
                     .set(&DataKey::MaxSupply, &max_supply);
+            env.storage().instance().set(&Admin, &admin);
+            env.storage().instance().set(&Name, &name);
+            env.storage().instance().set(&Symbol, &symbol);
+            env.storage().instance().set(&DataKey::TotalSupply, &0u32);
+            if let Some(supply) = max_supply {
+                env.storage().instance().set(&DataKey::MaxSupply, &supply);
             }
             if let Some(bps) = royalty_bps {
                 env.storage().instance().set(&DataKey::RoyaltyBps, &bps);
@@ -203,6 +212,10 @@ mod contract {
 
             if env.storage().persistent().has(&TokenKey::Owner(token_id)) {
                 return Err(NftError::TokenAlreadyMinted);
+            if let Some(max) = env.storage().instance().get::<_, u32>(&DataKey::MaxSupply) {
+                if token_id > max {
+                    return Err(NftError::MaxSupplyReached);
+                }
             }
 
             // Validate per-token royalty parameters.
@@ -265,6 +278,9 @@ mod contract {
                 env.storage()
                     .instance()
                     .set(&DataKey::NextTokenId, &(token_id + 1));
+                let key = TokenKey::TokenRoyaltyRecipient(token_id);
+                env.storage().persistent().set(&key, recipient);
+                extend_ttl_persistent(&env, &key, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
             }
 
             bump_instance(&env);
@@ -457,6 +473,7 @@ mod contract {
                     clippy::integer_division
                 )]
                 let amount = (sale_price * bps as i128) / 10_000;
+                let amount = apply_bps_fee(sale_price, bps).unwrap_or(0);
                 return Ok(Some(RoyaltyInfo { recipient, amount }));
             }
 
@@ -472,6 +489,8 @@ mod contract {
                 }
                 #[allow(clippy::arithmetic_side_effects, clippy::as_conversions, clippy::cast_possible_truncation, clippy::integer_division)]
                 let amount = (sale_price * bps as i128) / 10_000;
+                #[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
+                let amount = (sale_price * i128::from(bps)) / 10_000;
                 return Ok(Some(RoyaltyInfo { recipient, amount }));
             }
 
@@ -560,6 +579,9 @@ mod contract {
                 .instance()
                 .set(&DataKey::TotalSupply, &total.saturating_sub(1));
 
+            env.storage()
+                .instance()
+                .set(&TokenKey::Approved(token_id), &spender);
             bump_instance(&env);
             events::burned(&env, &from, token_id);
 
@@ -776,3 +798,5 @@ mod contract {
 }
 
 mod test;
+#[cfg(test)]
+mod royalty_test;
