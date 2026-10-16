@@ -16,7 +16,7 @@ use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_i
 use crate::require_not_paused;
 
 #[cfg(feature = "freeze")]
-use crate::require_not_frozen;
+use crate::{require_not_blacklisted, require_not_frozen};
 
 pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
     get_allowance(&env, from, spender)
@@ -59,6 +59,10 @@ pub fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) {
     if let Err(e) = require_not_frozen(&env, &from) {
         panic_with_error!(&env, e);
     }
+    #[cfg(feature = "freeze")]
+    if let Err(e) = require_not_blacklisted(&env, &from) {
+        panic_with_error!(&env, e);
+    }
     let to_address: Address = to.address();
     if let Err(e) = TokenContract::transfer_impl(&env, from, to_address, amount) {
         panic_with_error!(&env, e);
@@ -73,6 +77,10 @@ pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amo
     }
     #[cfg(feature = "freeze")]
     if let Err(e) = require_not_frozen(&env, &from) {
+        panic_with_error!(&env, e);
+    }
+    #[cfg(feature = "freeze")]
+    if let Err(e) = require_not_blacklisted(&env, &from) {
         panic_with_error!(&env, e);
     }
     if let Err(e) = validate_and_deduct_allowance(&env, from.clone(), spender.clone(), amount) {
@@ -91,6 +99,10 @@ pub fn burn(env: Env, from: Address, amount: i128) {
     }
     #[cfg(feature = "freeze")]
     if let Err(e) = require_not_frozen(&env, &from) {
+        panic_with_error!(&env, e);
+    }
+    #[cfg(feature = "freeze")]
+    if let Err(e) = require_not_blacklisted(&env, &from) {
         panic_with_error!(&env, e);
     }
     if amount <= 0 {
@@ -123,6 +135,10 @@ pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
     }
     #[cfg(feature = "freeze")]
     if let Err(e) = require_not_frozen(&env, &from) {
+        panic_with_error!(&env, e);
+    }
+    #[cfg(feature = "freeze")]
+    if let Err(e) = require_not_blacklisted(&env, &from) {
         panic_with_error!(&env, e);
     }
     if let Err(e) = validate_and_deduct_allowance(&env, from.clone(), spender.clone(), amount) {
@@ -178,6 +194,10 @@ pub fn transfer_batch(env: Env, from: Address, transfers: soroban_sdk::Vec<(Addr
     }
     #[cfg(feature = "freeze")]
     if let Err(e) = require_not_frozen(&env, &from) {
+        panic_with_error!(&env, e);
+    }
+    #[cfg(feature = "freeze")]
+    if let Err(e) = require_not_blacklisted(&env, &from) {
         panic_with_error!(&env, e);
     }
     if let Err(e) = TokenContract::transfer_batch(env.clone(), from, transfers) {
