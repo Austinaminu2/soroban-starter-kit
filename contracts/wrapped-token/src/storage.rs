@@ -19,6 +19,20 @@ pub enum DataKey {
     /// Persistent storage – cumulative amount wrapped so far by a given
     /// `Address` (`i128`). Only tracked when `MaxWrapPerAddress` is set.
     WrappedByAddress(Address),
+    /// Instance storage – whether `wrap` is paused (`bool`). Only used when
+    /// the `pausable` feature is enabled.
+    WrapPaused,
+    /// Instance storage – whether `unwrap` is paused (`bool`). Only used when
+    /// the `pausable` feature is enabled.
+    UnwrapPaused,
+    /// Instance storage – protocol fee charged on `wrap`, in basis points (`u32`).
+    /// Absent means no fee.
+    WrapFeeBps,
+    /// Instance storage – protocol fee charged on `unwrap`, in basis points (`u32`).
+    /// Absent means no fee.
+    UnwrapFeeBps,
+    /// Instance storage – address receiving collected protocol fees (`Address`).
+    FeeRecipient,
 }
 
 #[cfg(test)]
@@ -41,6 +55,11 @@ mod discriminant_tests {
             DataKey::Paused => 4,
             DataKey::MaxWrapPerAddress => 5,
             DataKey::WrappedByAddress(_) => 6,
+            DataKey::WrapPaused => 7,
+            DataKey::UnwrapPaused => 8,
+            DataKey::WrapFeeBps => 9,
+            DataKey::UnwrapFeeBps => 10,
+            DataKey::FeeRecipient => 11,
         }
     }
 

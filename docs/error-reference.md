@@ -216,7 +216,7 @@ Comprehensive reference for all error codes returned by the contracts in this re
 
 **Common cause:** Invoking `wrap`, `unwrap`, or `get_reserve_balance` before `initialize` has been called.
 
-**Resolution:** Call `initialize` with the admin, wrapped token, underlying token, and optional per-address cap before any other interaction.
+**Resolution:** Call `initialize` with the admin, wrapped token, underlying token, optional per-address cap and optional wrap/unwrap fee configuration before any other interaction.
 
 ---
 
@@ -267,6 +267,34 @@ Comprehensive reference for all error codes returned by the contracts in this re
 **Common cause:** A single address attempting to wrap more than the configured concentration-risk limit, either in one call or across multiple calls.
 
 **Resolution:** Check `wrapped_by(address)` and `max_wrap_per_address()` before calling `wrap`, and keep cumulative wraps within the cap.
+
+---
+
+### `Overflow` (code 8)
+
+**Description:** An `i128` supply, cap or fee calculation in `wrap`, `unwrap` or a batch call overflowed.
+
+**Common cause:** Wrapping very large amounts of a high-decimal asset, or a batch whose summed amounts exceed `i128::MAX`.
+
+**Resolution:** Split the operation into smaller amounts.
+
+---
+
+### `InvalidFee` (code 9)
+
+**Description:** `initialize` was given a `wrap_fee_bps` or `unwrap_fee_bps` above 10_000, or a non-zero fee without a `fee_recipient`.
+
+**Common cause:** Passing a percentage instead of basis points, or omitting the fee recipient.
+
+**Resolution:** Use basis points (`30` = 0.30%) and pass `Some(fee_recipient)` whenever a fee is non-zero.
+
+---
+
+### `EmptyBatch` (code 10)
+
+**Description:** `wrap_batch` or `unwrap_batch` was called with an empty recipient list.
+
+**Resolution:** Pass at least one `(recipient, amount)` pair.
 
 ---
 

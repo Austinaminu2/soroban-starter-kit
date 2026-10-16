@@ -20,6 +20,12 @@ pub enum WrappedTokenError {
     InsufficientReserve = 6,
     /// Wrapping this amount would exceed the per-address cap set at `initialize`.
     MaxWrapExceeded = 7,
+    /// An i128 supply or amount calculation overflowed.
+    Overflow = 8,
+    /// A fee is greater than 10_000 bps, or a non-zero fee was configured without a `fee_recipient`.
+    InvalidFee = 9,
+    /// A batch call was given an empty recipient list.
+    EmptyBatch = 10,
 }
 
 #[cfg(test)]

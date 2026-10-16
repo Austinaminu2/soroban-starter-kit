@@ -69,7 +69,7 @@ specifically, beyond the general rules above.
 | `timelock` | `Admin`, `Token`, `Beneficiary`, `ReleaseLedger`, `Amount`, `State` | `TimelockState` (stored under `State`) | `TimelockState`'s variant names are storage-breaking. |
 | `token` | `Admin`, `PendingAdmin`, `TotalSupply`, `Paused`, `MaxSupply`, `PendingUpgrade`, `Version`, `TransferHook`; dynamic: `Balance(Address)`, `Allowance(AllowanceDataKey)`, `Metadata(MetadataKey)`, `Frozen(Address)`, `Snapshot(Address, u32)` | `AllowanceDataKey`/`AllowanceValue`, snapshot balances | `AllowanceDataKey`/`AllowanceValue`'s field shape is storage-breaking; it is also the type most likely to be read by external integrators (wallets, DEXs), so a shape change needs coordinated off-chain updates, not just an on-chain migration. Shares the `PendingUpgrade`/`Version` pattern with `escrow` (see table above). |
 | `vesting` | `Beneficiary`, `Token`, `CliffLedger`, `EndLedger`, `Amount`, `Claimed`, `Revoked`, `Admin`, `AdminReleased`, `Version` | — | None beyond the general rules. |
-| `wrapped-token` | `Admin`, `WrappedToken`, `UnderlyingToken`, `TotalWrapped` | — | None beyond the general rules. |
+| `wrapped-token` | `Admin`, `WrappedToken`, `UnderlyingToken`, `TotalWrapped`, `Paused`, `MaxWrapPerAddress`, `WrapPaused`, `UnwrapPaused`, `WrapFeeBps`, `UnwrapFeeBps`, `FeeRecipient`; dynamic: `WrappedByAddress(Address)` | — | The legacy `Paused` flag is kept and still honoured (it blocks both directions) so contracts paused before the wrap/unwrap pause split stay paused after upgrade; `unpause()` clears it. |
 
 `contracts/common` has no storage of its own beyond the `AdminKey::Admin`
 type it defines for `escrow` to reuse (see the shared-pattern table above);

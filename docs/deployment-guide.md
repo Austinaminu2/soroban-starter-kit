@@ -739,7 +739,7 @@ below is what each contract ships with when deployed the standard way:
 |----------|-------------------|-------------------|
 | `token` | `pausable`, `upgradeable`, `capped-supply`, `freeze`, `transfer-hook` | `pause()`/`unpause()`; two-step `propose_upgrade()`/`execute_upgrade()`; a `max_supply` cap enforced on mint; `freeze_account()`/`unfreeze_account()`; an optional `on_transfer` hook contract |
 | `escrow` | `pausable` | `pause()`/`unpause()` and the same `propose_upgrade()`/`execute_upgrade()` timelock pair — both currently live under the single `pausable` gate in `contracts/escrow/src/lib.rs`, not a separate `upgradeable` gate |
-| `wrapped-token` | `pausable` | `pause()`/`unpause()` (closes #817) |
+| `wrapped-token` | `pausable` | `pause()`/`unpause()` (closes #817), `set_wrap_paused()`/`set_unwrap_paused()` (closes #1270) |
 | `multisig` | `pausable`, `upgradeable` | Neither currently guards any code — no pause or upgrade entry points exist yet in `contracts/multisig`. Both are declared for parity with the other contracts and defaulted on so they take effect automatically once implemented |
 
 To opt out of a default for a given deployment, build with
