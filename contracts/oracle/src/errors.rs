@@ -15,6 +15,10 @@ pub enum OracleError {
     InvalidStalenessThreshold = 5,
     NoPublisherData = 6,
     InsufficientHistory = 7,
+    /// Price submitted is zero or negative.
+    InvalidPrice = 8,
+    /// Requested asset symbol has no price feed.
+    AssetNotFound = 9,
 }
 
 impl_display_error!(
@@ -26,6 +30,8 @@ impl_display_error!(
     InvalidStalenessThreshold   => "invalid staleness threshold",
     NoPublisherData             => "no publisher data",
     InsufficientHistory         => "insufficient history",
+    InvalidPrice                => "price must be greater than zero",
+    AssetNotFound               => "asset not found",
 );
 
 #[cfg(test)]
@@ -46,7 +52,9 @@ OracleError::Unauthorized = {}\n\
 OracleError::StalePrice = {}\n\
 OracleError::InvalidStalenessThreshold = {}\n\
 OracleError::NoPublisherData = {}\n\
-OracleError::InsufficientHistory = {}\n",
+OracleError::InsufficientHistory = {}\n\
+OracleError::InvalidPrice = {}\n\
+OracleError::AssetNotFound = {}\n",
             OracleError::AlreadyInitialized as u32,
             OracleError::NotInitialized as u32,
             OracleError::Unauthorized as u32,
@@ -54,6 +62,8 @@ OracleError::InsufficientHistory = {}\n",
             OracleError::InvalidStalenessThreshold as u32,
             OracleError::NoPublisherData as u32,
             OracleError::InsufficientHistory as u32,
+            OracleError::InvalidPrice as u32,
+            OracleError::AssetNotFound as u32,
         )
     }
 

@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "benches",
   "contracts/common",
   "contracts/token",
   "contracts/escrow",
@@ -22,7 +21,6 @@ members = [
   "contracts/bonding-curve",
   "contracts/wrapped-token",
   "tests",
-  "fuzz",
 ]
 resolver = "2"
 
@@ -45,7 +43,10 @@ authors = ["Soroban Templates Contributors"]
 license = "Apache-2.0"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# SDK 28's `contractimpl` macro emits `allow(unsafe_code)` in test builds, which is
+# incompatible with `forbid`. Use `deny` so tests can compile while still rejecting
+# unsafe code in production paths.
+unsafe_code = "deny"
 unused_imports = "warn"
 unused_variables = "warn"
 
