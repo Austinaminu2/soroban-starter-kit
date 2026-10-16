@@ -33,6 +33,9 @@ pub enum DataKey {
     /// Instance storage – optional proof-of-reserve oracle contract (`Address`).
     /// Absent means wrapping is not checked against an external reserve.
     PorOracle,
+    /// Instance storage – optional minimum amount (`i128`) accepted by `wrap`
+    /// and `unwrap`. Absent means no minimum is enforced.
+    MinAmount,
 }
 
 #[cfg(test)]
@@ -60,6 +63,7 @@ mod discriminant_tests {
             DataKey::UnwrapRateUsage => 9,
             DataKey::UnwrapRateLimitPaused => 10,
             DataKey::PorOracle => 11,
+            DataKey::MinAmount => 12,
         }
     }
 
@@ -86,5 +90,6 @@ mod discriminant_tests {
             10
         );
         assert_eq!(wrapped_token_data_key_index(&DataKey::PorOracle), 11);
+        assert_eq!(wrapped_token_data_key_index(&DataKey::MinAmount), 12);
     }
 }

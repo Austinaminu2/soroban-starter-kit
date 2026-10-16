@@ -16,6 +16,8 @@ pub enum WrappedTokenError {
     MaxWrapExceeded = 7,
     /// Aggregate unwrap volume in the current ledger window exceeded the cap.
     RateLimitExceeded = 8,
+    /// Amount is below the configured minimum wrap/unwrap threshold.
+    AmountTooLow = 9,
 }
 
 impl_display_error!(
@@ -28,6 +30,7 @@ impl_display_error!(
     InsufficientReserve => "insufficient reserve",
     MaxWrapExceeded     => "max wrap exceeded",
     RateLimitExceeded   => "unwrap rate limit exceeded",
+    AmountTooLow        => "amount below minimum",
 );
 
 #[cfg(test)]
@@ -49,7 +52,8 @@ WrappedTokenError::InvalidAmount = {}\n\
 WrappedTokenError::InsufficientBalance = {}\n\
 WrappedTokenError::InsufficientReserve = {}\n\
 WrappedTokenError::MaxWrapExceeded = {}\n\
-WrappedTokenError::RateLimitExceeded = {}\n",
+WrappedTokenError::RateLimitExceeded = {}\n\
+WrappedTokenError::AmountTooLow = {}\n",
             WrappedTokenError::AlreadyInitialized as u32,
             WrappedTokenError::NotInitialized as u32,
             WrappedTokenError::Unauthorized as u32,
@@ -58,6 +62,7 @@ WrappedTokenError::RateLimitExceeded = {}\n",
             WrappedTokenError::InsufficientReserve as u32,
             WrappedTokenError::MaxWrapExceeded as u32,
             WrappedTokenError::RateLimitExceeded as u32,
+            WrappedTokenError::AmountTooLow as u32,
         )
     }
 

@@ -74,7 +74,8 @@ mod contract {
         ///
         /// Returns [`TimelockError::AlreadyInitialized`] if already set up.
         /// Returns [`TimelockError::InvalidAmount`] if `amount` <= 0.
-        /// Returns [`TimelockError::InvalidReleaseLedger`] if `release_ledger` <= current ledger.
+        /// Returns [`TimelockError::InvalidReleaseLedger`] if `release_ledger` is not at least
+        /// [`soroban_common::MIN_DEADLINE_BUFFER`] ledgers in the future.
         pub fn initialize(
             env: Env,
             admin: Address,
@@ -89,9 +90,8 @@ mod contract {
             if amount <= 0 {
                 return Err(TimelockError::InvalidAmount);
             }
-            if release_ledger <= env.ledger().sequence() {
-                return Err(TimelockError::InvalidReleaseLedger);
-            }
+            soroban_common::validate_deadline(&env, release_ledger)
+                .map_err(|_| TimelockError::InvalidReleaseLedger)?;
 
             admin.require_auth();
 
@@ -578,7 +578,8 @@ mod contract {
         /// Returns [`TimelockError::NotInitialized`] if not yet set up.
         /// Returns [`TimelockError::NotAuthorized`] if either party fails authorization.
         /// Returns [`TimelockError::TrancheAlreadyReleased`] if the tranche was already released.
-        /// Returns [`TimelockError::InvalidReleaseLedger`] if `new_release_ledger` <= current ledger.
+        /// Returns [`TimelockError::InvalidReleaseLedger`] if `new_release_ledger` is not at least
+        /// [`soroban_common::MIN_DEADLINE_BUFFER`] ledgers in the future.
         pub fn reschedule_tranche(
             env: Env,
             tranche_id: u32,
@@ -602,9 +603,8 @@ mod contract {
                 return Err(TimelockError::TrancheAlreadyReleased);
             }
 
-            if new_release_ledger <= env.ledger().sequence() {
-                return Err(TimelockError::InvalidReleaseLedger);
-            }
+            soroban_common::validate_deadline(&env, new_release_ledger)
+                .map_err(|_| TimelockError::InvalidReleaseLedger)?;
 
             let old_ledger = tranches.get(tranche_id).unwrap().release_ledger;
             let mut tranche = tranches.get(tranche_id).unwrap();
