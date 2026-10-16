@@ -1436,8 +1436,10 @@ mod contract {
             };
 
             for (recipient, bps) in splits.iter() {
-                #[allow(clippy::arithmetic_side_effects, clippy::integer_division)] // bps validated <= 10_000
-                let amount = (sale_price * i128::from(bps)) / 10_000;
+                // Floor-rounded via the audited fixed-point primitive; rounding dust
+                // stays with the seller.
+                let amount = soroban_common::math::mul_div(sale_price, i128::from(bps), 10_000)
+                    .unwrap_or(0);
                 payments.push_back((recipient, amount));
             }
             payments

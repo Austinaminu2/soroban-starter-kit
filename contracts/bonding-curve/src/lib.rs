@@ -22,8 +22,15 @@ pub use errors::BondingCurveError;
 pub use storage::{CurveState, DataKey, PRICE_SCALE};
 use storage::{BPS_DENOMINATOR, MAX_FEE_BPS, MIN_CONNECTOR_WEIGHT_BPS};
 
+use soroban_common::math::{FixedPoint, FixedPointError, apply_bps_fee};
 use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_instance};
 use storage::{BUY_COOLDOWN_LEDGERS, CurveState, MAX_BUYS_PER_LEDGER};
+
+impl From<FixedPointError> for BondingCurveError {
+    fn from(_: FixedPointError) -> Self {
+        BondingCurveError::Overflow
+    }
+}
 
 fn bump(env: &Env) {
     extend_ttl_instance(env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
@@ -33,13 +40,11 @@ fn fixed_pow(mut base: i128, mut exponent: u32) -> Result<i128, BondingCurveErro
     let mut result = PRICE_SCALE;
     while exponent > 0 {
         if exponent & 1 == 1 {
-            result = result.checked_mul(base).ok_or(BondingCurveError::Overflow)?
-                .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?;
+            result = FixedPoint::mul_div(result, base, PRICE_SCALE)?;
         }
         exponent >>= 1;
         if exponent > 0 {
-            base = base.checked_mul(base).ok_or(BondingCurveError::Overflow)?
-                .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?;
+            base = FixedPoint::mul_div(base, base, PRICE_SCALE)?;
         }
     }
     Ok(result)
@@ -52,11 +57,13 @@ fn fixed_root(value: i128, root: u32) -> Result<i128, BondingCurveError> {
     for _ in 0..32 {
         let denominator = fixed_pow(estimate, root - 1)?;
         if denominator == 0 { return Err(BondingCurveError::Overflow); }
-        let next = estimate.checked_mul((root - 1) as i128).ok_or(BondingCurveError::Overflow)?
-            .checked_add(value.checked_mul(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?
-                .checked_div(denominator).ok_or(BondingCurveError::Overflow)?)
-            .ok_or(BondingCurveError::Overflow)?
-            .checked_div(root as i128).ok_or(BondingCurveError::Overflow)?;
+        let scaled_value = FixedPoint::mul_div(value, PRICE_SCALE, denominator)?;
+        let next = FixedPoint::mul_div(
+            estimate.checked_mul((root - 1) as i128).ok_or(BondingCurveError::Overflow)?
+                .checked_add(scaled_value).ok_or(BondingCurveError::Overflow)?,
+            PRICE_SCALE,
+            (root as i128).checked_mul(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?,
+        )?;
         if next == estimate { break; }
         estimate = next;
     }
@@ -68,10 +75,8 @@ fn linear_price(base_price: i128, slope: i128, supply: i128) -> Result<i128, Bon
     if supply < 0 || base_price <= 0 || slope < 0 {
         return Err(BondingCurveError::InvalidConfiguration);
     }
-    base_price.checked_add(
-        slope.checked_mul(supply).ok_or(BondingCurveError::Overflow)?
-            .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?,
-    ).ok_or(BondingCurveError::Overflow)
+    base_price.checked_add(FixedPoint::mul_div(slope, supply, PRICE_SCALE)?)
+        .ok_or(BondingCurveError::Overflow)
 }
 
 /// Bancor-style spot price. Linear bootstrap pricing remains active until the
@@ -86,14 +91,7 @@ fn calculate_price(
     if reserve <= 0 || supply <= 0 {
         return Ok(linear);
     }
-    let scaled = reserve
-        .checked_mul(PRICE_SCALE)
-        .ok_or(BondingCurveError::Overflow)?;
-    scaled
-        .checked_div(supply + 1)
-        .ok_or(BondingCurveError::Overflow)
-    let reserve_price = reserve.checked_mul(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?
-        .checked_div(supply).ok_or(BondingCurveError::Overflow)?;
+    let reserve_price = FixedPoint::mul_div(reserve, PRICE_SCALE, supply)?;
     Ok(linear.max(reserve_price))
 }
 
@@ -119,33 +117,21 @@ fn buy_cost(
     // Linear curve: cost ≈ reserve * (1/(old_supply+1) + ... + 1/(new_supply+1))
     // Simplified: reserve * amount / (supply + 1) + reserve * amount^2 / (2 * (supply+1)^2)
     // For minimal gas, use average price approximation:
-    let avg_price =
-        (calculate_price(reserve, old_supply)? + calculate_price(reserve, new_supply)?) / 2;
-    let cost = amount
-        .checked_mul(avg_price)
-        .ok_or(BondingCurveError::Overflow)?
-        .checked_div(PRICE_SCALE)
+    let linear = FixedPoint::mul_div_up(base_price, amount, PRICE_SCALE)?
+        .checked_add(FixedPoint::mul_div_up(
+            slope,
+            supply.checked_mul(amount).ok_or(BondingCurveError::Overflow)?
+                .checked_add(amount.checked_mul(amount - 1).ok_or(BondingCurveError::Overflow)? / 2)
+                .ok_or(BondingCurveError::Overflow)?,
+            PRICE_SCALE,
+        )?)
         .ok_or(BondingCurveError::Overflow)?;
-    Ok(cost)
-    let new_supply = supply.checked_add(amount).ok_or(BondingCurveError::Overflow)?;
-    let linear = base_price.checked_mul(amount).ok_or(BondingCurveError::Overflow)?
-        .checked_add(
-            slope.checked_mul(
-                supply.checked_mul(amount).ok_or(BondingCurveError::Overflow)?
-                    .checked_add(amount.checked_mul(amount - 1).ok_or(BondingCurveError::Overflow)? / 2)
-                    .ok_or(BondingCurveError::Overflow)?,
-            ).ok_or(BondingCurveError::Overflow)?
-                .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?,
-        ).ok_or(BondingCurveError::Overflow)?;
     if reserve <= 0 || supply <= 0 { return Ok(linear.max(1)); }
-    let ratio = PRICE_SCALE.checked_add(
-        amount.checked_mul(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?
-            .checked_div(supply).ok_or(BondingCurveError::Overflow)?,
-    ).ok_or(BondingCurveError::Overflow)?;
+    let ratio = PRICE_SCALE.checked_add(FixedPoint::mul_div_up(amount, PRICE_SCALE, supply)?)
+        .ok_or(BondingCurveError::Overflow)?;
     let exponent = BPS_DENOMINATOR as u32 / connector_weight_bps;
     let power = fixed_pow(ratio, exponent)?;
-    let bancor = reserve.checked_mul(power - PRICE_SCALE).ok_or(BondingCurveError::Overflow)?
-        .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?;
+    let bancor = FixedPoint::mul_div_up(reserve, power - PRICE_SCALE, PRICE_SCALE)?;
     Ok(linear.max(bancor).max(1))
 }
 
@@ -164,32 +150,21 @@ fn sell_proceeds(
 
     let new_supply = supply - amount;
 
-    let avg_price =
-        (calculate_price(reserve, old_supply)? + calculate_price(reserve, new_supply)?) / 2;
-    let proceeds = amount
-        .checked_mul(avg_price)
-        .ok_or(BondingCurveError::Overflow)?
-        .checked_div(PRICE_SCALE)
+    let linear = FixedPoint::mul_div(base_price, amount, PRICE_SCALE)?
+        .checked_add(FixedPoint::mul_div(
+            slope,
+            new_supply.checked_mul(amount).ok_or(BondingCurveError::Overflow)?
+                .checked_add(amount.checked_mul(amount + 1).ok_or(BondingCurveError::Overflow)? / 2)
+                .ok_or(BondingCurveError::Overflow)?,
+            PRICE_SCALE,
+        )?)
         .ok_or(BondingCurveError::Overflow)?;
-    Ok(proceeds)
-    let linear = base_price.checked_mul(amount).ok_or(BondingCurveError::Overflow)?
-        .checked_add(
-            slope.checked_mul(
-                new_supply.checked_mul(amount).ok_or(BondingCurveError::Overflow)?
-                    .checked_add(amount.checked_mul(amount + 1).ok_or(BondingCurveError::Overflow)? / 2)
-                    .ok_or(BondingCurveError::Overflow)?,
-            ).ok_or(BondingCurveError::Overflow)?
-                .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?,
-        ).ok_or(BondingCurveError::Overflow)?;
     if reserve <= 0 || supply <= 0 { return Ok(linear.max(1).min(reserve)); }
-    let remaining_ratio = PRICE_SCALE.checked_sub(
-        amount.checked_mul(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?
-            .checked_div(supply).ok_or(BondingCurveError::Overflow)?,
-    ).ok_or(BondingCurveError::Overflow)?;
+    let remaining_ratio = PRICE_SCALE.checked_sub(FixedPoint::mul_div(amount, PRICE_SCALE, supply)?)
+        .ok_or(BondingCurveError::Overflow)?;
     let root = BPS_DENOMINATOR as u32 / connector_weight_bps;
     let remaining_reserve_ratio = fixed_root(remaining_ratio, root)?;
-    let bancor = reserve.checked_mul(PRICE_SCALE - remaining_reserve_ratio).ok_or(BondingCurveError::Overflow)?
-        .checked_div(PRICE_SCALE).ok_or(BondingCurveError::Overflow)?;
+    let bancor = FixedPoint::mul_div(reserve, PRICE_SCALE - remaining_reserve_ratio, PRICE_SCALE)?;
     Ok(linear.max(bancor).max(1).min(reserve))
 }
 
@@ -593,8 +568,7 @@ impl BondingCurveContract {
         let treasury: Address = env.storage().instance().get(&DataKey::Treasury).ok_or(BondingCurveError::NotInitialized)?;
 
         let cost = buy_cost(reserve, supply, amount, base_price, slope, connector_weight_bps)?;
-        let fee = cost.checked_mul(fee_bps as i128).ok_or(BondingCurveError::Overflow)?
-            .checked_div(BPS_DENOMINATOR).ok_or(BondingCurveError::Overflow)?;
+        let fee = apply_bps_fee(cost, fee_bps)?;
         let reserve_credit = cost.checked_sub(fee).ok_or(BondingCurveError::Overflow)?;
         if cost > max_cost || reserve_credit <= 0 {
             return Err(BondingCurveError::InvalidAmount);
@@ -675,8 +649,7 @@ impl BondingCurveContract {
         }
 
         let proceeds = sell_proceeds(reserve, supply, amount, base_price, slope, connector_weight_bps)?;
-        let fee = proceeds.checked_mul(fee_bps as i128).ok_or(BondingCurveError::Overflow)?
-            .checked_div(BPS_DENOMINATOR).ok_or(BondingCurveError::Overflow)?;
+        let fee = apply_bps_fee(proceeds, fee_bps)?;
         let seller_proceeds = proceeds.checked_sub(fee).ok_or(BondingCurveError::Overflow)?;
         if seller_proceeds < min_proceeds {
             return Err(BondingCurveError::InvalidAmount);
