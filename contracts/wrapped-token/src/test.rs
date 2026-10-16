@@ -8,7 +8,11 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, token};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Ledger as _},
+    token,
+};
 
 /// Registers the wrapped-token contract plus two Stellar Asset Contracts
 /// (underlying + wrapped), with the wrapped-token contract itself set as the
@@ -211,6 +215,160 @@ fn test_initialize_rejects_non_positive_cap() {
     let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
     let result = client.try_initialize(&admin, &wrapped_token, &underlying_token, &Some(0i128));
     assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// unwrap checked arithmetic and reserve guard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unwrap_underflow_when_amount_exceeds_supply() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+
+    assert!(client.try_unwrap(&user, &1i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 0);
+
+    client.wrap(&user, &50i128);
+    // Extra wrapped tokens minted outside `wrap`, with matching underlying
+    // donated in, so this fails the supply check rather than the reserve check.
+    token::StellarAssetClient::new(&env, &wrapped_token).mint(&user, &50i128);
+    token::Client::new(&env, &underlying_token).transfer(&user, &client.address, &50i128);
+
+    assert!(client.try_unwrap(&user, &51i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 50);
+
+    client.unwrap(&user, &50i128);
+    assert_eq!(client.get_total_wrapped(), 0);
+}
+
+#[test]
+fn test_unwrap_rejects_when_reserve_is_short() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.wrap(&user, &100i128);
+
+    // Underlying leaves the contract without a matching burn (rebasing / external drain).
+    env.as_contract(&client.address, || {
+        token::Client::new(&env, &underlying_token).transfer(&client.address, &user, &40i128);
+    });
+    assert_eq!(client.get_reserve_balance(), 60);
+    assert!(client.try_unwrap(&user, &61i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    client.unwrap(&user, &60i128);
+    assert_eq!(client.get_total_wrapped(), 40);
+    assert_eq!(client.get_reserve_balance(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Proof-of-reserve oracle
+// ---------------------------------------------------------------------------
+
+#[soroban_sdk::contract]
+struct MockPorOracle;
+
+#[soroban_sdk::contractimpl]
+impl MockPorOracle {
+    pub fn set_reserve(env: Env, reserve: i128) {
+        env.storage()
+            .instance()
+            .set(&symbol_short!("reserve"), &reserve);
+    }
+
+    pub fn get_reserve(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("reserve"))
+            .unwrap_or(0)
+    }
+}
+
+#[test]
+fn test_wrap_rejected_when_oracle_reserve_exceeded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+
+    let oracle_id = env.register_contract(None, MockPorOracle);
+    let oracle = MockPorOracleClient::new(&env, &oracle_id);
+    oracle.set_reserve(&150i128);
+    client.set_por_oracle(&Some(oracle_id));
+
+    client.wrap(&user, &100i128);
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    // 100 + 51 > 150
+    assert!(client.try_wrap(&user, &51i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    // Boundary: 100 + 50 == 150 is allowed.
+    client.wrap(&user, &50i128);
+    assert_eq!(client.get_total_wrapped(), 150);
+
+    oracle.set_reserve(&200i128);
+    client.wrap(&user, &40i128);
+    assert_eq!(client.get_total_wrapped(), 190);
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate unwrap rate limit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unwrap_rate_limit_throttles_high_volume_spike() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.sequence_number = 1_000);
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    let other = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &underlying_token).mint(&other, &1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.set_unwrap_rate_limit(&100i128, &10u32);
+
+    client.wrap(&user, &400i128);
+    client.wrap(&other, &400i128);
+
+    client.unwrap(&user, &60i128);
+    client.unwrap(&other, &40i128);
+    assert_eq!(client.get_total_wrapped(), 700);
+
+    // 60 + 40 + 1 exceeds the aggregate cap of 100 inside this window.
+    assert!(client.try_unwrap(&user, &1i128).is_err());
+    assert_eq!(client.get_total_wrapped(), 700);
+
+    env.ledger().with_mut(|l| l.sequence_number = 1_010);
+    client.unwrap(&user, &80i128);
+    assert_eq!(client.get_total_wrapped(), 620);
+}
+
+#[test]
+fn test_admin_can_bypass_unwrap_rate_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.set_unwrap_rate_limit(&50i128, &100u32);
+    client.wrap(&user, &200i128);
+
+    assert!(client.try_unwrap(&user, &80i128).is_err());
+
+    client.set_unwrap_rate_limit_paused(&true);
+    client.unwrap(&user, &80i128);
+    assert_eq!(client.get_total_wrapped(), 120);
+
+    client.set_unwrap_rate_limit_paused(&false);
+    assert!(client.try_unwrap(&user, &80i128).is_err());
 }
 
 // ---------------------------------------------------------------------------
