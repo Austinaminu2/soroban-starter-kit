@@ -682,9 +682,10 @@ pub fn bump_instance(env: &Env) {
 /// }
 /// ```
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics if the key is not present in instance storage.
+/// Returns `Result::Err(E)` (constructed via `E::from(())`) if the key is not
+/// present in instance storage.
 ///
 /// # Examples
 ///
