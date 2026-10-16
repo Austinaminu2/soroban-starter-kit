@@ -15,6 +15,14 @@ pub fn unwrapped(env: &Env, user: &Address, amount: i128, total: i128) {
         .publish((Symbol::new(env, "unwrapped"),), (user.clone(), amount, total));
 }
 
+/// Emitted when the minimum wrap/unwrap amount configuration changes.
+pub fn min_amount_updated(env: &Env, admin: &Address, min_amount: Option<i128>) {
+    env.events().publish(
+        (Symbol::new(env, "min_amount_updated"),),
+        (admin.clone(), min_amount),
+    );
+}
+
 /// Emitted when the contract is paused. Only used when the `pausable` feature is enabled.
 #[cfg(feature = "pausable")]
 pub fn paused(env: &Env, admin: &Address) {

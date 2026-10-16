@@ -51,13 +51,34 @@ fn setup<'a>(
     (client, admin, user, wrapped_token, underlying_token)
 }
 
+/// Registers the wrapped-token contract plus two Stellar Asset Contracts
+/// (underlying + wrapped), with the wrapped-token contract itself set as the
+/// wrapped SAC's admin so `wrap` can mint. Mints `initial_underlying` of the
+/// underlying asset to `user`.
+fn setup_with_min<'a>(
+    env: &'a Env,
+    initial_underlying: i128,
+    min_amount: Option<i128>,
+) -> (
+    WrappedTokenContractClient<'a>,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
+    let (client, admin, user, wrapped_token, underlying_token) =
+        setup(env, initial_underlying);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &min_amount);
+    (client, admin, user, wrapped_token, underlying_token)
+}
+
 #[test]
 fn test_wrap_unwrap_1_1_peg() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     client.wrap(&user, &100i128);
     assert_eq!(client.get_total_wrapped(), 100);
@@ -84,9 +105,9 @@ fn test_initialize_idempotent_check() {
     env.mock_all_auths();
 
     let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
-    let result = client.try_initialize(&admin, &wrapped_token, &underlying_token, &None);
+    let result = client.try_initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
     assert!(result.is_err());
 }
 
@@ -96,10 +117,137 @@ fn test_wrap_requires_positive_amount() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 100);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     assert!(client.try_wrap(&user, &0i128).is_err());
     assert!(client.try_wrap(&user, &-1i128).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// min_amount threshold (issue #1272)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_min_amount_rejects_dust_wrap() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, user, _wrapped_token, _underlying_token) =
+        setup_with_min(&env, 1_000, Some(100i128));
+    assert_eq!(client.min_amount(), Some(100i128));
+
+    // 1-stroop dust and anything below the threshold must be rejected.
+    let result = client.try_wrap(&user, &1i128);
+    assert_eq!(result, Err(Ok(WrappedTokenError::AmountTooLow)));
+    let result = client.try_wrap(&user, &99i128);
+    assert_eq!(result, Err(Ok(WrappedTokenError::AmountTooLow)));
+
+    // Nothing was applied.
+    assert_eq!(client.get_total_wrapped(), 0);
+    assert_eq!(client.wrapped_by(&user), 0);
+}
+
+#[test]
+fn test_min_amount_rejects_dust_unwrap() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, user, _wrapped_token, _underlying_token) =
+        setup_with_min(&env, 1_000, Some(100i128));
+    client.wrap(&user, &500i128);
+
+    let result = client.try_unwrap(&user, &1i128);
+    assert_eq!(result, Err(Ok(WrappedTokenError::AmountTooLow)));
+    let result = client.try_unwrap(&user, &99i128);
+    assert_eq!(result, Err(Ok(WrappedTokenError::AmountTooLow)));
+
+    assert_eq!(client.get_total_wrapped(), 500);
+    assert_eq!(client.wrapped_by(&user), 500);
+}
+
+#[test]
+fn test_min_amount_boundary_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, user, _wrapped_token, _underlying_token) =
+        setup_with_min(&env, 1_000, Some(100i128));
+
+    // Exactly the threshold is allowed.
+    client.wrap(&user, &100i128);
+    assert_eq!(client.get_total_wrapped(), 100);
+
+    // Above the threshold is allowed.
+    client.wrap(&user, &150i128);
+    assert_eq!(client.get_total_wrapped(), 250);
+
+    client.unwrap(&user, &100i128);
+    assert_eq!(client.get_total_wrapped(), 150);
+    client.unwrap(&user, &150i128);
+    assert_eq!(client.get_total_wrapped(), 0);
+}
+
+#[test]
+fn test_set_min_amount_updates_threshold() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, user, _wrapped_token, _underlying_token) =
+        setup_with_min(&env, 1_000, None);
+    assert_eq!(client.min_amount(), None);
+
+    // Uncapped: dust is accepted.
+    client.wrap(&user, &1i128);
+    assert_eq!(client.get_total_wrapped(), 1);
+
+    // Admin raises the threshold; dust is now rejected.
+    client.set_min_amount(&Some(50i128));
+    assert_eq!(client.min_amount(), Some(50i128));
+    let result = client.try_wrap(&user, &1i128);
+    assert_eq!(result, Err(Ok(WrappedTokenError::AmountTooLow)));
+    let result = client.try_unwrap(&user, &1i128);
+    assert_eq!(result, Err(Ok(WrappedTokenError::AmountTooLow)));
+
+    // Amounts at or above the new threshold still work.
+    client.wrap(&user, &50i128);
+    assert_eq!(client.get_total_wrapped(), 51);
+    client.unwrap(&user, &50i128);
+    assert_eq!(client.get_total_wrapped(), 1);
+
+    // Admin can clear the threshold again.
+    client.set_min_amount(&None);
+    assert_eq!(client.min_amount(), None);
+    client.unwrap(&user, &1i128);
+    assert_eq!(client.get_total_wrapped(), 0);
+}
+
+#[test]
+fn test_none_min_amount_leaves_wrap_and_unwrap_uncapped() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin, user, _wrapped_token, _underlying_token) =
+        setup_with_min(&env, 1_000, None);
+    assert_eq!(client.min_amount(), None);
+
+    client.wrap(&user, &1i128);
+    assert_eq!(client.get_total_wrapped(), 1);
+    client.unwrap(&user, &1i128);
+    assert_eq!(client.get_total_wrapped(), 0);
+}
+
+#[test]
+fn test_initialize_rejects_non_positive_min_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
+    let result =
+        client.try_initialize(&admin, &wrapped_token, &underlying_token, &None, &Some(0i128));
+    assert!(result.is_err());
+    let result =
+        client.try_initialize(&admin, &wrapped_token, &underlying_token, &None, &Some(-1i128));
+    assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +260,7 @@ fn test_get_reserve_balance_matches_underlying_holdings() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     assert_eq!(client.get_reserve_balance(), 0);
 
@@ -131,7 +279,7 @@ fn test_reserve_invariant_holds_after_wrap_unwrap_sequence() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 10_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     let amounts: [i128; 6] = [500, 200, -300, 400, -100, -700];
     for delta in amounts {
@@ -156,7 +304,7 @@ fn test_max_wrap_per_address_boundary_succeeds() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128), &None);
 
     client.wrap(&user, &300i128);
     client.wrap(&user, &200i128); // cumulative 500 == cap, must succeed
@@ -169,7 +317,7 @@ fn test_max_wrap_per_address_rejects_over_cap() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128), &None);
 
     client.wrap(&user, &300i128);
     let result = client.try_wrap(&user, &201i128); // cumulative 501 > cap
@@ -188,7 +336,7 @@ fn test_max_wrap_per_address_is_per_user() {
     let other_user = Address::generate(&env);
     token::StellarAssetClient::new(&env, &underlying_token).mint(&other_user, &1_000);
 
-    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128), &None);
 
     client.wrap(&user, &500i128);
     // A different address has its own independent cap allowance.
@@ -203,7 +351,7 @@ fn test_uncapped_wrap_allows_large_amounts() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
     assert_eq!(client.max_wrap_per_address(), None);
 
     client.wrap(&user, &1_000_000i128);
@@ -216,7 +364,8 @@ fn test_initialize_rejects_non_positive_cap() {
     env.mock_all_auths();
 
     let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
-    let result = client.try_initialize(&admin, &wrapped_token, &underlying_token, &Some(0i128));
+    let result =
+        client.try_initialize(&admin, &wrapped_token, &underlying_token, &Some(0i128), &None);
     assert!(result.is_err());
 }
 
@@ -230,7 +379,7 @@ fn test_unwrap_underflow_when_amount_exceeds_supply() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     assert!(client.try_unwrap(&user, &1i128).is_err());
     assert_eq!(client.get_total_wrapped(), 0);
@@ -254,7 +403,7 @@ fn test_unwrap_rejects_when_reserve_is_short() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
     client.wrap(&user, &100i128);
 
     // Underlying leaves the contract without a matching burn (rebasing / external drain).
@@ -299,7 +448,7 @@ fn test_wrap_rejected_when_oracle_reserve_exceeded() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     let oracle_id = env.register_contract(None, MockPorOracle);
     let oracle = MockPorOracleClient::new(&env, &oracle_id);
@@ -335,7 +484,7 @@ fn test_unwrap_rate_limit_throttles_high_volume_spike() {
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
     let other = Address::generate(&env);
     token::StellarAssetClient::new(&env, &underlying_token).mint(&other, &1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
     client.set_unwrap_rate_limit(&100i128, &10u32);
 
     client.wrap(&user, &400i128);
@@ -360,7 +509,7 @@ fn test_admin_can_bypass_unwrap_rate_limit() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
     client.set_unwrap_rate_limit(&50i128, &100u32);
     client.wrap(&user, &200i128);
 
@@ -388,7 +537,7 @@ mod pausable_tests {
         env.mock_all_auths();
 
         let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 100);
-        client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+        client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
         client.pause();
         assert!(client.try_wrap(&user, &10i128).is_err());
@@ -400,7 +549,7 @@ mod pausable_tests {
         env.mock_all_auths();
 
         let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 100);
-        client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+        client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
         client.wrap(&user, &50i128);
 
         client.pause();
@@ -413,7 +562,7 @@ mod pausable_tests {
         env.mock_all_auths();
 
         let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 100);
-        client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+        client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
         client.pause();
         client.unpause();
@@ -430,7 +579,7 @@ mod pausable_tests {
         env.mock_all_auths();
 
         let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
-        client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+        client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
         client.pause();
         use soroban_sdk::testutils::Events as _;
@@ -443,7 +592,7 @@ mod pausable_tests {
         env.mock_all_auths();
 
         let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
-        client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+        client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
         client.pause();
         client.unpause();
@@ -457,7 +606,7 @@ mod pausable_tests {
         env.mock_all_auths();
 
         let (client, admin, _user, wrapped_token, underlying_token) = setup(&env, 0);
-        client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+        client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
         // Not directly testable without auth mocking per-address; pause() enforces
         // admin via require_admin + require_auth, exercised positively above.
@@ -477,7 +626,7 @@ fn test_unwrap_decrements_wrapped_by_user_allowing_rewrap() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128), &None);
 
     client.wrap(&user, &500i128);
     assert_eq!(client.wrapped_by(&user), 500);
@@ -499,7 +648,7 @@ fn test_unwrap_clamps_wrapped_by_user_at_zero() {
     env.mock_all_auths();
 
     let (client, admin, user, wrapped_token, underlying_token) = setup(&env, 1_000);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128));
+    client.initialize(&admin, &wrapped_token, &underlying_token, &Some(500i128), &None);
 
     client.wrap(&user, &100i128);
     client.unwrap(&user, &100i128);
@@ -602,7 +751,7 @@ fn test_wrap_mints_only_actual_received_with_fee_on_transfer() {
     FeeOnTransferTokenClient::new(&env, &underlying_token).mint(&user, &1_000);
 
     let client = WrappedTokenContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     // User requests wrap of 100; fee-on-transfer delivers 90 to the contract.
     client.wrap(&user, &100i128);
@@ -629,7 +778,7 @@ fn test_fee_on_transfer_wrap_then_full_unwrap_succeeds() {
     FeeOnTransferTokenClient::new(&env, &underlying_token).mint(&user, &1_000);
 
     let client = WrappedTokenContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &wrapped_token, &underlying_token, &None);
+    client.initialize(&admin, &wrapped_token, &underlying_token, &None, &None);
 
     client.wrap(&user, &200i128); // receives 180
     assert_eq!(client.get_total_wrapped(), 180);

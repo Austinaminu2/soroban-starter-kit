@@ -45,6 +45,12 @@ pub enum DataKey {
     /// Release flag for an individual tranche stored in persistent storage
     /// (index -> true/false).
     TrancheReleased(u32),
+    /// Pending beneficiary address proposed for two-step transfer.
+    PendingBeneficiary,
+    /// Early release penalty in basis points.
+    EarlyReleasePenaltyBps,
+    /// Address that receives the early release penalty.
+    PenaltyRecipient,
     /// Locked balance for a specific token (token address -> amount).
     LockedBalance(Address),
     /// List of release tranches for a specific token (token address -> tranches).

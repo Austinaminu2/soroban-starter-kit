@@ -160,15 +160,20 @@ mod contract {
         /// `max_wrap_per_address` optionally bounds the cumulative amount any single
         /// address may ever wrap, to limit concentration risk. Pass `None` for no cap.
         ///
+        /// `min_amount` optionally sets the minimum amount accepted by `wrap` and
+        /// `unwrap`, to prevent dust spam. Pass `None` for no minimum.
+        ///
         /// # Errors
         /// - [`WrappedTokenError::AlreadyInitialized`] if called more than once.
-        /// - [`WrappedTokenError::InvalidAmount`] if `max_wrap_per_address` is `Some(n)` with `n <= 0`.
+        /// - [`WrappedTokenError::InvalidAmount`] if `max_wrap_per_address` is `Some(n)` with `n <= 0`,
+        ///   or if `min_amount` is `Some(n)` with `n <= 0`.
         pub fn initialize(
             env: Env,
             admin: Address,
             wrapped_token: Address,
             underlying_token: Address,
             max_wrap_per_address: Option<i128>,
+            min_amount: Option<i128>,
         ) -> Result<(), WrappedTokenError> {
             if env.storage().instance().has(&DataKey::Admin) {
                 return Err(WrappedTokenError::AlreadyInitialized);
@@ -193,6 +198,13 @@ mod contract {
                     .set(&DataKey::MaxWrapPerAddress, &cap);
             }
 
+            if let Some(min) = min_amount {
+                if min <= 0 {
+                    return Err(WrappedTokenError::InvalidAmount);
+                }
+                env.storage().instance().set(&DataKey::MinAmount, &min);
+            }
+
             bump(&env);
             events::initialized(&env, &admin, &wrapped_token);
             Ok(())
@@ -206,6 +218,8 @@ mod contract {
         /// - [`WrappedTokenError::NotInitialized`] if the contract has not been initialized.
         /// - [`WrappedTokenError::Unauthorized`] if the contract is paused (requires the `pausable` feature).
         /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0.
+        /// - [`WrappedTokenError::AmountTooLow`] if `amount` is below the configured minimum
+        ///   (see `initialize` / `set_min_amount`).
         /// - [`WrappedTokenError::MaxWrapExceeded`] if `user`'s cumulative wrapped amount would exceed
         ///   the per-address cap set at `initialize`.
         /// - [`WrappedTokenError::InsufficientReserve`] if a proof-of-reserve oracle is set and
@@ -218,6 +232,15 @@ mod contract {
             require_not_paused(&env)?;
             if amount <= 0 {
                 return Err(WrappedTokenError::InvalidAmount);
+            }
+            if let Some(min) = env
+                .storage()
+                .instance()
+                .get::<_, i128>(&DataKey::MinAmount)
+            {
+                if amount < min {
+                    return Err(WrappedTokenError::AmountTooLow);
+                }
             }
             user.require_auth();
 
@@ -318,6 +341,8 @@ mod contract {
         /// - [`WrappedTokenError::NotInitialized`] if the contract has not been initialized.
         /// - [`WrappedTokenError::Unauthorized`] if the contract is paused (requires the `pausable` feature).
         /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0, or if `amount` exceeds the tracked wrapped supply.
+        /// - [`WrappedTokenError::AmountTooLow`] if `amount` is below the configured minimum
+        ///   (see `initialize` / `set_min_amount`).
         /// - [`WrappedTokenError::InsufficientBalance`] if user has insufficient wrapped tokens.
         /// - [`WrappedTokenError::InsufficientReserve`] if the contract's underlying balance is below `amount`.
         /// - [`WrappedTokenError::RateLimitExceeded`] if this unwrap would push the
@@ -331,6 +356,15 @@ mod contract {
             require_not_paused(&env)?;
             if amount <= 0 {
                 return Err(WrappedTokenError::InvalidAmount);
+            }
+            if let Some(min) = env
+                .storage()
+                .instance()
+                .get::<_, i128>(&DataKey::MinAmount)
+            {
+                if amount < min {
+                    return Err(WrappedTokenError::AmountTooLow);
+                }
             }
             user.require_auth();
 
@@ -438,6 +472,43 @@ mod contract {
         /// Returns the per-address wrap cap set at `initialize`, or `None` if uncapped.
         pub fn max_wrap_per_address(env: Env) -> Option<i128> {
             env.storage().instance().get(&DataKey::MaxWrapPerAddress)
+        }
+
+        /// Returns the minimum amount accepted by `wrap` and `unwrap`, or `None` if unset.
+        pub fn min_amount(env: Env) -> Option<i128> {
+            env.storage().instance().get(&DataKey::MinAmount)
+        }
+
+        /// Set or clear the minimum amount accepted by `wrap` and `unwrap`.
+        /// `None` disables the minimum. Admin only.
+        ///
+        /// # Errors
+        /// - [`WrappedTokenError::NotInitialized`]
+        /// - [`WrappedTokenError::InvalidAmount`] if `min_amount` is `Some(n)` with `n <= 0`.
+        pub fn set_min_amount(
+            env: Env,
+            min_amount: Option<i128>,
+        ) -> Result<(), WrappedTokenError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(WrappedTokenError::NotInitialized)?;
+            admin.require_auth();
+            match min_amount {
+                Some(min) => {
+                    if min <= 0 {
+                        return Err(WrappedTokenError::InvalidAmount);
+                    }
+                    env.storage().instance().set(&DataKey::MinAmount, &min);
+                }
+                None => {
+                    env.storage().instance().remove(&DataKey::MinAmount);
+                }
+            }
+            bump(&env);
+            events::min_amount_updated(&env, &admin, min_amount);
+            Ok(())
         }
 
         /// Returns the cumulative amount `account` has wrapped so far (0 if never wrapped,
