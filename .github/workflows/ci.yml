@@ -332,7 +332,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [token_fuzz, escrow_initialize, token_mint_burn]
+        target: [token_fuzz, escrow_initialize, token_mint_burn, auction_fuzz]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
