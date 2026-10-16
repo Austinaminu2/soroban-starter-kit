@@ -4,13 +4,24 @@
 //!
 //! Provides admin-storage helpers, TTL/lifetime constants, deadline validation,
 //! basis-point fee calculation, commit-reveal hashing, Merkle single- and
-//! multi-proof verification ([`merkle`]), and the [`AdminKey`]
-//! storage key reused across the contract crates.
+//! multi-proof verification ([`merkle`]), the [`AdminKey`] storage key reused
+//! across the contract crates, and the audited fixed-point arithmetic helpers
+//! ([`math`]) used for checked multiplication, division, and scale conversion.
+//!
+//! The [`math`] module exposes [`FixedPoint`] / [`FixedPoint128`] along with
+//! the free functions [`mul_div`], [`mul_div_up`], [`mul_div_nearest`],
+//! [`to_scale`], and [`from_scale`], all of which perform overflow-checked
+//! arithmetic and return [`FixedPointError`] on failure.
 
 use soroban_sdk::{Address, Bytes, BytesN, Env, contracttype, crypto::Hash};
 
+pub mod math;
 pub mod merkle;
 
+pub use math::{
+    FixedPoint, FixedPoint128, FixedPointError, from_scale, mul_div, mul_div_nearest, mul_div_up,
+    to_scale,
+};
 pub use merkle::{hash_pair_sorted, verify_merkle_multi_proof, verify_merkle_proof};
 
 /// Minimum number of ledgers the deadline must be ahead of the current ledger
@@ -276,7 +287,7 @@ pub const BPS_DENOMINATOR: i128 = 10_000;
 /// ```
 #[must_use]
 pub fn apply_bps_fee(amount: i128, bps: u32) -> Option<i128> {
-    amount.checked_mul(bps as i128)?.checked_div(BPS_DENOMINATOR)
+    mul_div(amount, bps as i128, BPS_DENOMINATOR).ok()
 }
 
 // ─── Commit-reveal hashing helpers (#887) ────────────────────────────────────

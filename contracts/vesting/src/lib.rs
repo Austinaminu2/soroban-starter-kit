@@ -9,7 +9,7 @@
 #[cfg(test)]
 extern crate std;
 
-use soroban_sdk::{Address, Env, U256, Vec, contract, contractimpl, token};
+use soroban_sdk::{Address, Env, Vec, contract, contractimpl, token};
 
 mod errors;
 mod events;
@@ -25,6 +25,7 @@ pub use storage::{BeneficiarySchedule, DataKey, VestingInfo};
 
 use soroban_common::{
     LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_instance, extend_ttl_persistent,
+    math::mul_div,
 };
 
 fn bump(env: &Env) {
@@ -66,26 +67,11 @@ pub(crate) fn vested_amount(
     // u32 ledger difference fits in i128
     let total = (end_ledger - cliff_ledger) as i128;
 
-    // Widen to 256-bit unsigned arithmetic so `amount * elapsed` cannot
-    // overflow for realistic supplies and durations. `amount` is validated
-    // positive by `create_schedule`, so the unsigned conversion is safe.
-    let amount_u = U256::from_u128(&Env::default(), amount as u128);
-    let elapsed_u = U256::from_u128(&Env::default(), elapsed as u128);
-    let total_u = U256::from_u128(&Env::default(), total as u128);
-
-    let product = amount_u
-        .checked_mul(&elapsed_u)
-        .ok_or(VestingError::ArithmeticError)?;
-    let quotient = product
-        .checked_div(&total_u)
-        .ok_or(VestingError::ArithmeticError)?;
-
-    // The result is bounded by `amount` (<= i128::MAX), so the downcast is
-    // exact; guard anyway to surface any unexpected overflow.
-    let result = quotient
-        .to_u128()
-        .ok_or(VestingError::ArithmeticError)?;
-    i128::try_from(result).map_err(|_| VestingError::ArithmeticError)
+    // Delegate to the shared, audited fixed-point primitive. It widens to
+    // 256-bit arithmetic internally so `amount * elapsed` cannot overflow for
+    // realistic supplies and durations, and rounds down (truncates) to match
+    // the previous behaviour.
+    mul_div(amount, elapsed, total).map_err(|_| VestingError::ArithmeticError)
 }
 
 /// Returns the number of tokens vested as of `ledger` for a tranche-based
@@ -110,22 +96,11 @@ pub(crate) fn vested_amount_tranches(
         if ledger < tranche_ledger {
             break;
         }
-        // Widen to 256-bit unsigned arithmetic so `amount * bps` cannot
-        // overflow for realistic supplies. `amount` is validated positive by
-        // `create_schedule`, so the unsigned conversion is safe.
-        let amount_u = U256::from_u128(&Env::default(), amount as u128);
-        let bps_u = U256::from_u128(&Env::default(), bps as u128);
-        let product = amount_u
-            .checked_mul(&bps_u)
-            .ok_or(VestingError::ArithmeticError)?;
-        let ten_thousand = U256::from_u128(&Env::default(), 10_000u128);
-        let quotient = product
-            .checked_div(&ten_thousand)
-            .ok_or(VestingError::ArithmeticError)?;
-        let release = quotient
-            .to_u128()
-            .ok_or(VestingError::ArithmeticError)?;
-        let release = i128::try_from(release).map_err(|_| VestingError::ArithmeticError)?;
+        // Delegate to the shared, audited fixed-point primitive so the same
+        // overflow-safe `amount * bps / 10_000` logic handles both linear and
+        // tranche vesting. `amount` is validated positive by `create_schedule`.
+        let release = mul_div(amount, bps as i128, 10_000)
+            .map_err(|_| VestingError::ArithmeticError)?;
         vested = vested
             .checked_add(release)
             .ok_or(VestingError::ArithmeticError)?;

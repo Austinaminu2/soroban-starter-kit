@@ -19,7 +19,8 @@ mod storage;
 pub use errors::SwapError;
 pub use storage::{BasketLeg, BasketSwapInfo, DataKey, SwapInfo, SwapKey, SwapState};
 
-use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, apply_bps_fee};
+use soroban_common::math::{FixedPoint, FixedPointError, mul_div};
+use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
 use storage::DataKey::{Admin, BasketSwapCount, FeeBps, SwapCount, Treasury};
 pub use storage::{DataKey, SwapInfo, SwapState};
 pub use storage::{DataKey, SwapInfo, SwapKey, SwapPage, SwapState};
@@ -90,7 +91,8 @@ pub fn calculate_and_validate_fee(amount_b: i128, fee_bps: u32) -> Result<i128, 
     if fee_bps == 0 {
         return Ok(0);
     }
-    let raw_fee = apply_bps_fee(amount_b, fee_bps).ok_or(SwapError::InvalidAmount)?;
+    let raw_fee = FixedPoint::apply_bps_fee(amount_b, fee_bps)
+        .map_err(|_| SwapError::MathOverflow)?;
     let fee = if raw_fee == 0 && amount_b > 0 {
         1i128
     } else {
@@ -494,17 +496,12 @@ mod contract {
                 return Err(SwapError::InvalidState);
             }
 
-            let product = swap
-                .amount_b
-                .checked_mul(fill_amount_a)
-                .ok_or(SwapError::MathOverflow)?;
-            if product % swap.amount_a != 0 {
-                return Err(SwapError::InvalidAmount);
-            }
-            let fill_amount_b = product / swap.amount_a;
+            let fill_amount_b = mul_div(fill_amount_a, swap.amount_b, swap.amount_a)
+                .map_err(|_| SwapError::MathOverflow)?;
             ensure_valid_leg_amount(fill_amount_b)?;
 
-            let fee = apply_bps_fee(fill_amount_b, fee_bps).ok_or(SwapError::MathOverflow)?;
+            let fee = FixedPoint::apply_bps_fee(fill_amount_b, fee_bps)
+                .map_err(|_| SwapError::MathOverflow)?;
             let party_a_amount = fill_amount_b
                 .checked_sub(fee)
                 .ok_or(SwapError::MathOverflow)?;
@@ -546,7 +543,7 @@ mod contract {
                     return Err(SwapError::ExecutionDelayExceeded);
                 }
             }
-            let fee = apply_bps_fee(swap.amount_b, fee_bps).unwrap_or(0);
+            let fee = FixedPoint::apply_bps_fee(swap.amount_b, fee_bps).unwrap_or(0);
             let party_a_amount = swap
                 .amount_b
                 .checked_sub(fee)

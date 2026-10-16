@@ -29,6 +29,7 @@ mod prop_test;
 pub use errors::StakingError;
 pub use storage::{DataKey, REWARD_SCALE, UnbondRequest};
 
+use soroban_common::math::mul_div;
 use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_instance};
 
 fn bump(env: &Env) {
@@ -72,7 +73,7 @@ fn last_update_ledger(env: &Env) -> u32 {
 /// `ΔRPT = Δledgers * rate * REWARD_SCALE / total_staked`.  Only the ledgers
 /// within the active emission window `[last_update, period_end]` count, so
 /// emission stops exactly at `period_end` and never over-distributes.
-fn accrue(env: &Env, total_staked: i128) {
+fn accrue(env: &Env, total_staked: i128) -> Result<(), StakingError> {
     let now = env.ledger().sequence();
     let last = last_update_ledger(env);
     let end = period_end(env);
@@ -84,14 +85,22 @@ fn accrue(env: &Env, total_staked: i128) {
 
     if elapsed > 0 && rate > 0 && total_staked > 0 {
         let rpt = reward_per_token(env);
-        let delta = (elapsed as i128) * rate * REWARD_SCALE / total_staked;
+        // `elapsed * rate` may overflow; surface it as an error rather than
+        // silently wrapping, then scale by `REWARD_SCALE / total_staked`.
+        let numerator = (elapsed as i128)
+            .checked_mul(rate)
+            .ok_or(StakingError::Overflow)?;
+        let delta = mul_div(numerator, REWARD_SCALE, total_staked)
+            .ok_or(StakingError::Overflow)?;
+        let new_rpt = rpt.checked_add(delta).ok_or(StakingError::Overflow)?;
         env.storage()
             .instance()
-            .set(&DataKey::RewardPerTokenStored, &(rpt + delta));
+            .set(&DataKey::RewardPerTokenStored, &new_rpt);
     }
     env.storage()
         .instance()
         .set(&DataKey::LastUpdateLedger, &now);
+    Ok(())
 }
 
 /// Helper to get admin address or return NotInitialized error.
@@ -135,9 +144,18 @@ fn get_total_rewards_internal(env: &Env) -> Result<i128, StakingError> {
 }
 
 /// Pure reward calculation — isolated from storage for testability.
-#[allow(clippy::arithmetic_side_effects)] // overflow checked via REWARD_SCALE invariant
-pub(crate) fn calculate_earned(stake: i128, rpt: i128, paid: i128, accrued: i128) -> i128 {
-    accrued + stake * (rpt - paid) / REWARD_SCALE
+///
+/// Uses the shared checked fixed-point helper so that overflow is surfaced
+/// as an error instead of wrapping.  Returns `None` on overflow.
+pub(crate) fn calculate_earned(
+    stake: i128,
+    rpt: i128,
+    paid: i128,
+    accrued: i128,
+) -> Option<i128> {
+    let delta = rpt.checked_sub(paid)?;
+    let earned = mul_div(stake, delta, REWARD_SCALE)?;
+    accrued.checked_add(earned)
 }
 
 /// Computes how many reward tokens `staker` has earned since their last update.
@@ -158,7 +176,7 @@ fn earned(env: &Env, staker: &Address) -> i128 {
         .persistent()
         .get(&DataKey::Rewards(staker.clone()))
         .unwrap_or(0i128);
-    calculate_earned(stake, rpt, paid, accrued)
+    calculate_earned(stake, rpt, paid, accrued).unwrap_or(0i128)
 }
 
 /// Snapshots the staker's earned rewards and updates their paid-up-to pointer.
@@ -268,7 +286,7 @@ mod contract {
             let admin = get_admin(&env)?;
             admin.require_auth();
             let total_staked = get_total_staked_internal(&env)?;
-            accrue(&env, total_staked);
+            accrue(&env, total_staked)?;
             env.storage()
                 .instance()
                 .set(&DataKey::RewardRate, &reward_rate);
@@ -282,7 +300,7 @@ mod contract {
         /// Returns the pending rewards for `staker` including linear accrual.
         pub fn pending_rewards(env: Env, staker: Address) -> i128 {
             let total_staked = get_total_staked_internal(&env).unwrap_or(0i128);
-            accrue(&env, total_staked);
+            let _ = accrue(&env, total_staked);
             earned(&env, &staker)
         }
 
@@ -291,7 +309,7 @@ mod contract {
         pub fn stake(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
             staker.require_auth();
             let total_staked = get_total_staked_internal(&env)?;
-            accrue(&env, total_staked);
+            accrue(&env, total_staked)?;
             update_reward(&env, &staker);
             let stake_token = get_stake_token(&env)?;
             token::Client::new(&env, &stake_token).transfer(
@@ -334,7 +352,7 @@ mod contract {
         pub fn claim_rewards(env: Env, staker: Address) -> Result<i128, StakingError> {
             staker.require_auth();
             let total_staked = get_total_staked_internal(&env)?;
-            accrue(&env, total_staked);
+            accrue(&env, total_staked)?;
             update_reward(&env, &staker);
             let reward: i128 = env
                 .storage()
@@ -369,7 +387,7 @@ mod contract {
         pub fn unstake(env: Env, staker: Address, amount: i128) -> Result<(), StakingError> {
             staker.require_auth();
             let total_staked = get_total_staked_internal(&env)?;
-            accrue(&env, total_staked);
+            accrue(&env, total_staked)?;
             update_reward(&env, &staker);
             let prev: i128 = env
                 .storage()
@@ -437,7 +455,7 @@ mod contract {
             let admin = get_admin(&env)?;
             admin.require_auth();
             let total_staked = get_total_staked_internal(&env)?;
-            accrue(&env, total_staked);
+            accrue(&env, total_staked)?;
             update_reward(&env, &staker);
             let prev: i128 = env
                 .storage()

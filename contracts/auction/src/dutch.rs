@@ -8,13 +8,14 @@
 //! and is clamped to `floor_price` from `start_ledger + duration_ledgers` onwards.
 
 use crate::{AuctionError, DutchConfig};
+use soroban_common::math::mul_div;
 
 /// Return the Dutch auction price at `ledger` for the schedule `cfg`.
 ///
-/// The product `spread * elapsed` is split as `q * elapsed + r * elapsed / duration`
-/// (with `spread = q * duration + r`) so the intermediate values never exceed
-/// `spread`, even when `start_price` is close to `i128::MAX`. The result is
-/// identical to the floor of the textbook formula.
+/// The linear interpolation `spread * elapsed / duration` is computed with the
+/// shared checked fixed-point primitive [`soroban_common::math::mul_div`], which
+/// rounds down and surfaces overflow as an error instead of panicking. The
+/// result is identical to the floor of the textbook formula.
 ///
 /// # Errors
 ///
@@ -34,16 +35,7 @@ pub fn price_at(cfg: &DutchConfig, ledger: u32) -> Result<i128, AuctionError> {
     let elapsed = i128::from(elapsed);
     let duration = i128::from(cfg.duration_ledgers);
 
-    let quotient = spread.checked_div(duration).ok_or(AuctionError::Overflow)?;
-    let remainder = spread.checked_rem(duration).ok_or(AuctionError::Overflow)?;
-    let remainder_decay = remainder
-        .checked_mul(elapsed)
-        .and_then(|v| v.checked_div(duration))
-        .ok_or(AuctionError::Overflow)?;
-    let decay = quotient
-        .checked_mul(elapsed)
-        .and_then(|v| v.checked_add(remainder_decay))
-        .ok_or(AuctionError::Overflow)?;
+    let decay = mul_div(spread, elapsed, duration).map_err(|_| AuctionError::Overflow)?;
 
     let price = cfg
         .start_price
