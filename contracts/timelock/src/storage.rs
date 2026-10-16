@@ -40,6 +40,11 @@ pub enum DataKey {
     Deposited,
     /// Principal currently deposited in the staking contract.
     StakedAmount,
+    /// Individual release tranche stored in persistent storage (index -> tranche).
+    Tranche(u32),
+    /// Release flag for an individual tranche stored in persistent storage
+    /// (index -> true/false).
+    TrancheReleased(u32),
 }
 
 #[contracttype]

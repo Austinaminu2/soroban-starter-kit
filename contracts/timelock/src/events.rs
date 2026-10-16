@@ -67,5 +67,9 @@ pub fn yield_distributed(
             yield_recipient.clone(),
         ),
         (principal, yield_amount),
+pub fn tranche_rescheduled(env: &Env, tranche_id: u32, old_ledger: u32, new_ledger: u32) {
+    env.events().publish(
+        (Symbol::new(env, "tranche_rescheduled"), tranche_id),
+        (old_ledger, new_ledger),
     );
 }
