@@ -15,8 +15,89 @@ pub use errors::WrappedTokenError;
 pub use storage::DataKey;
 
 use soroban_common::{
-    LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, extend_ttl_instance, extend_ttl_persistent,
+    LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD, check_and_record, extend_ttl_instance,
+    extend_ttl_persistent,
 };
+
+/// Off-chain or cross-chain reserve oracle. `get_reserve` is the collateral balance.
+#[allow(missing_docs)]
+mod por_oracle {
+    use super::Env;
+
+    #[soroban_sdk::contractclient(name = "PorOracleClient")]
+    #[allow(dead_code)]
+    pub trait PorOracle {
+        fn get_reserve(env: Env) -> i128;
+    }
+}
+
+pub use por_oracle::PorOracleClient;
+
+/// `check_and_record` namespace for the aggregate unwrap rate limit.
+const UNWRAP_RATE_NAMESPACE: u32 = 1;
+
+/// Enforce the optional aggregate unwrap cap for the current sliding ledger window.
+///
+/// No-op when the limit is unset or an admin has paused it for a migration.
+/// The cap is shared by every unwrapper: `check_and_record` is keyed by this
+/// contract's address, and the stored usage is the sum of unwrap amounts.
+fn enforce_unwrap_rate_limit(env: &Env, amount: i128) -> Result<(), WrappedTokenError> {
+    if env
+        .storage()
+        .instance()
+        .get(&DataKey::UnwrapRateLimitPaused)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let Some(limit) = env
+        .storage()
+        .instance()
+        .get::<_, i128>(&DataKey::UnwrapRateLimit)
+    else {
+        return Ok(());
+    };
+    let window: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::UnwrapRateWindow)
+        .unwrap_or(1);
+    let window = window.max(1);
+
+    let current = env.ledger().sequence();
+    let (start, used): (u32, i128) = env
+        .storage()
+        .instance()
+        .get(&DataKey::UnwrapRateUsage)
+        .unwrap_or((current, 0i128));
+    let (start, used) = if current >= start.saturating_add(window) {
+        (current, 0i128)
+    } else {
+        (start, used)
+    };
+    let new_used = used
+        .checked_add(amount)
+        .ok_or(WrappedTokenError::InvalidAmount)?;
+    if new_used > limit {
+        return Err(WrappedTokenError::RateLimitExceeded);
+    }
+
+    let max_calls = u32::try_from(limit).unwrap_or(u32::MAX).max(1);
+    if !check_and_record(
+        env,
+        UNWRAP_RATE_NAMESPACE,
+        &env.current_contract_address(),
+        window,
+        max_calls,
+    ) {
+        return Err(WrappedTokenError::RateLimitExceeded);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::UnwrapRateUsage, &(start, new_used));
+    Ok(())
+}
 
 fn bump(env: &Env) {
     extend_ttl_instance(env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
@@ -127,6 +208,8 @@ mod contract {
         /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0.
         /// - [`WrappedTokenError::MaxWrapExceeded`] if `user`'s cumulative wrapped amount would exceed
         ///   the per-address cap set at `initialize`.
+        /// - [`WrappedTokenError::InsufficientReserve`] if a proof-of-reserve oracle is set and
+        ///   `total_wrapped + amount` would exceed the oracle's reserve balance.
         pub fn wrap(env: Env, user: Address, amount: i128) -> Result<(), WrappedTokenError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(WrappedTokenError::NotInitialized);
@@ -202,6 +285,20 @@ mod contract {
                 .checked_add(actual_received)
                 .ok_or(WrappedTokenError::InvalidAmount)?;
 
+            if let Some(oracle) = env
+                .storage()
+                .instance()
+                .get::<_, Address>(&DataKey::PorOracle)
+            {
+                let oracle_reserve = PorOracleClient::new(&env, &oracle).get_reserve();
+                if new_total > oracle_reserve {
+                    return Err(WrappedTokenError::InsufficientReserve);
+                }
+            }
+
+            // Commit local accounting before making external token calls. Soroban rolls back
+            // this transaction if either interaction fails, while this ordering prevents a
+            // re-entrant token implementation from observing stale supply accounting.
             env.storage()
                 .instance()
                 .set(&DataKey::TotalWrapped, &new_total);
@@ -220,8 +317,12 @@ mod contract {
         /// # Errors
         /// - [`WrappedTokenError::NotInitialized`] if the contract has not been initialized.
         /// - [`WrappedTokenError::Unauthorized`] if the contract is paused (requires the `pausable` feature).
-        /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0.
+        /// - [`WrappedTokenError::InvalidAmount`] if `amount` <= 0, or if `amount` exceeds the tracked wrapped supply.
         /// - [`WrappedTokenError::InsufficientBalance`] if user has insufficient wrapped tokens.
+        /// - [`WrappedTokenError::InsufficientReserve`] if the contract's underlying balance is below `amount`.
+        /// - [`WrappedTokenError::RateLimitExceeded`] if this unwrap would push the
+        ///   aggregate amount unwrapped in the current ledger window past
+        ///   `max_unwrap_per_window`.
         pub fn unwrap(env: Env, user: Address, amount: i128) -> Result<(), WrappedTokenError> {
             if !env.storage().instance().has(&DataKey::Admin) {
                 return Err(WrappedTokenError::NotInitialized);
@@ -232,6 +333,8 @@ mod contract {
                 return Err(WrappedTokenError::InvalidAmount);
             }
             user.require_auth();
+
+            enforce_unwrap_rate_limit(&env, amount)?;
 
             let wrapped_token: Address = env
                 .storage()
@@ -250,6 +353,9 @@ mod contract {
                 .instance()
                 .get(&DataKey::TotalWrapped)
                 .unwrap_or(0i128);
+            if total < amount {
+                return Err(WrappedTokenError::InvalidAmount);
+            }
             let new_total = total
                 .checked_sub(amount)
                 .ok_or(WrappedTokenError::InvalidAmount)?;
@@ -276,6 +382,10 @@ mod contract {
                     LEDGER_LIFETIME_THRESHOLD,
                     LEDGER_BUMP_AMOUNT,
                 );
+            let reserve = token::Client::new(&env, &underlying_token)
+                .balance(&env.current_contract_address());
+            if reserve < amount {
+                return Err(WrappedTokenError::InsufficientReserve);
             }
 
             // Commit local accounting before making external token calls. Any failed call
@@ -337,6 +447,81 @@ mod contract {
                 .persistent()
                 .get(&DataKey::WrappedByAddress(account))
                 .unwrap_or(0i128)
+        }
+
+        /// Cap aggregate unwrap volume to `max_unwrap_per_window` per sliding
+        /// window of `window_ledgers` ledgers. Admin only.
+        ///
+        /// # Errors
+        /// - [`WrappedTokenError::NotInitialized`]
+        /// - [`WrappedTokenError::InvalidAmount`] if the cap is not positive or the window is zero.
+        pub fn set_unwrap_rate_limit(
+            env: Env,
+            max_unwrap_per_window: i128,
+            window_ledgers: u32,
+        ) -> Result<(), WrappedTokenError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(WrappedTokenError::NotInitialized)?;
+            admin.require_auth();
+            if max_unwrap_per_window <= 0 || window_ledgers == 0 {
+                return Err(WrappedTokenError::InvalidAmount);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::UnwrapRateLimit, &max_unwrap_per_window);
+            env.storage()
+                .instance()
+                .set(&DataKey::UnwrapRateWindow, &window_ledgers);
+            bump(&env);
+            Ok(())
+        }
+
+        /// Set or clear the proof-of-reserve oracle. `None` disables the check. Admin only.
+        ///
+        /// # Errors
+        /// - [`WrappedTokenError::NotInitialized`]
+        pub fn set_por_oracle(env: Env, oracle: Option<Address>) -> Result<(), WrappedTokenError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(WrappedTokenError::NotInitialized)?;
+            admin.require_auth();
+            match oracle {
+                Some(oracle) => {
+                    env.storage().instance().set(&DataKey::PorOracle, &oracle);
+                }
+                None => {
+                    env.storage().instance().remove(&DataKey::PorOracle);
+                }
+            }
+            bump(&env);
+            Ok(())
+        }
+
+        /// Pause or resume the unwrap rate limit. While paused, unwraps bypass
+        /// the cap so an admin can run an authorized migration. Admin only.
+        ///
+        /// # Errors
+        /// - [`WrappedTokenError::NotInitialized`]
+        pub fn set_unwrap_rate_limit_paused(
+            env: Env,
+            paused: bool,
+        ) -> Result<(), WrappedTokenError> {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .ok_or(WrappedTokenError::NotInitialized)?;
+            admin.require_auth();
+            env.storage()
+                .instance()
+                .set(&DataKey::UnwrapRateLimitPaused, &paused);
+            bump(&env);
+            Ok(())
         }
     }
 
