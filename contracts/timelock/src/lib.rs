@@ -7,6 +7,9 @@
 
 use soroban_sdk::{Address, Env, Vec, contract, contractimpl, token};
 
+/// Number of tranches stored in persistent storage.
+const TRANCHE_COUNT: u32 = 0;
+
 mod errors;
 mod events;
 mod storage;
@@ -153,15 +156,28 @@ mod contract {
             env.storage().instance().set(&Admin, &admin);
             env.storage().instance().set(&Token, &token);
             env.storage().instance().set(&Beneficiary, &beneficiary);
-            env.storage().instance().set(&Tranches, &tranches);
 
-            // Initialize released tranches tracking (all false initially)
+            // Store each tranche and its release flag in persistent storage.
             let released_count = tranches.len();
-            let mut released = Vec::new(&env);
-            for _ in 0..released_count {
-                released.push_back(false);
+            for i in 0..released_count {
+                let tranche = tranches.get(i).unwrap();
+                let tranche_key = DataKey::Tranche(i);
+                env.storage().persistent().set(&tranche_key, &tranche);
+                env.storage().persistent().extend_ttl(
+                    &tranche_key,
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+
+                let released_key = DataKey::TrancheReleased(i);
+                env.storage().persistent().set(&released_key, &false);
+                env.storage().persistent().extend_ttl(
+                    &released_key,
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
             }
-            env.storage().instance().set(&ReleasedTranches, &released);
+            env.storage().instance().set(&TRANCHE_COUNT, &released_count);
 
             // Also set legacy fields for backwards compatibility
             let first_tranche = tranches.get(0).unwrap();
@@ -196,34 +212,51 @@ mod contract {
             let beneficiary: Address = get_required(&env, &Beneficiary)?;
 
             // Check if this is a multi-tranche timelock
-            let tranches_opt: Option<Vec<ReleaseTranche>> = env.storage().instance().get(&Tranches);
+            let tranche_count: Option<u32> = env.storage().instance().get(&TRANCHE_COUNT);
 
-            if let Some(tranches) = tranches_opt {
+            if let Some(count) = tranche_count {
                 // Multi-tranche release
-                let mut released: Vec<bool> = match env
-                    .storage()
-                    .instance()
-                    .get(&ReleasedTranches) {
-                    Some(v) => v,
-                    None => {
-                        let mut v = Vec::new(&env);
-                        for _ in 0..tranches.len() {
-                            v.push_back(false);
-                        }
-                        v
-                    }
-                };
-
                 let current_ledger = env.ledger().sequence();
                 let mut total_released: i128 = 0;
                 let mut any_new_released = false;
+                let mut all_released = true;
 
-                for i in 0..tranches.len() {
-                    let tranche = tranches.get(i).unwrap();
-                    if !released.get(i).unwrap() && current_ledger >= tranche.release_ledger {
-                        released.set(i, true);
+                for i in 0..count {
+                    let tranche_key = DataKey::Tranche(i);
+                    let tranche: ReleaseTranche = env
+                        .storage()
+                        .persistent()
+                        .get(&tranche_key)
+                        .ok_or(TimelockError::NotInitialized)?;
+                    env.storage().persistent().extend_ttl(
+                        &tranche_key,
+                        LEDGER_LIFETIME_THRESHOLD,
+                        LEDGER_BUMP_AMOUNT,
+                    );
+
+                    let released_key = DataKey::TrancheReleased(i);
+                    let is_released: bool = env
+                        .storage()
+                        .persistent()
+                        .get(&released_key)
+                        .unwrap_or(false);
+                    env.storage().persistent().extend_ttl(
+                        &released_key,
+                        LEDGER_LIFETIME_THRESHOLD,
+                        LEDGER_BUMP_AMOUNT,
+                    );
+
+                    if !is_released && current_ledger >= tranche.release_ledger {
+                        env.storage().persistent().set(&released_key, &true);
+                        env.storage().persistent().extend_ttl(
+                            &released_key,
+                            LEDGER_LIFETIME_THRESHOLD,
+                            LEDGER_BUMP_AMOUNT,
+                        );
                         total_released += tranche.amount;
                         any_new_released = true;
+                    } else if !is_released {
+                        all_released = false;
                     }
                 }
 
@@ -231,16 +264,6 @@ mod contract {
                     return Err(TimelockError::NotYetReleasable);
                 }
 
-                // Check if all tranches have been released
-                let mut all_released = true;
-                for i in 0..released.len() {
-                    if !released.get(i).unwrap() {
-                        all_released = false;
-                        break;
-                    }
-                }
-
-                env.storage().instance().set(&ReleasedTranches, &released);
                 if all_released {
                     env.storage().instance().set(&State, &TimelockState::Released);
                 }
@@ -401,11 +424,20 @@ mod contract {
         /// Return full timelock details.
         #[must_use]
         pub fn get_info(env: Env) -> Result<TimelockInfo, TimelockError> {
-            let tranches: Vec<ReleaseTranche> = env
-                .storage()
-                .instance()
-                .get(&Tranches)
-                .unwrap_or_else(|| Vec::new(&env));
+            let mut tranches: Vec<ReleaseTranche> = Vec::new(&env);
+            if let Some(count) = env.storage().instance().get::<_, u32>(&TRANCHE_COUNT) {
+                for i in 0..count {
+                    let tranche_key = DataKey::Tranche(i);
+                    if let Some(tranche) = env.storage().persistent().get(&tranche_key) {
+                        env.storage().persistent().extend_ttl(
+                            &tranche_key,
+                            LEDGER_LIFETIME_THRESHOLD,
+                            LEDGER_BUMP_AMOUNT,
+                        );
+                        tranches.push_back(tranche);
+                    }
+                }
+            }
 
             Ok(TimelockInfo {
                 admin: get_required(&env, &Admin)?,
@@ -429,10 +461,22 @@ mod contract {
             let current_ledger = env.ledger().sequence();
 
             // Check for multi-tranche timelock
-            if let Some(tranches) = env.storage().instance().get::<_, Vec<ReleaseTranche>>(&Tranches) {
-                for tranche in tranches.iter() {
-                    if current_ledger >= tranche.release_ledger {
-                        return true;
+            if let Some(count) = env.storage().instance().get::<_, u32>(&TRANCHE_COUNT) {
+                for i in 0..count {
+                    let tranche_key = DataKey::Tranche(i);
+                    if let Some(tranche) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, ReleaseTranche>(&tranche_key)
+                    {
+                        env.storage().persistent().extend_ttl(
+                            &tranche_key,
+                            LEDGER_LIFETIME_THRESHOLD,
+                            LEDGER_BUMP_AMOUNT,
+                        );
+                        if current_ledger >= tranche.release_ledger {
+                            return true;
+                        }
                     }
                 }
                 return false;
