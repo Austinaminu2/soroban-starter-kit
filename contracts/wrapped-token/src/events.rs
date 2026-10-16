@@ -1,18 +1,26 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Symbol};
 
 pub fn initialized(env: &Env, admin: &Address, token: &Address) {
-    let topics = (Symbol::new(env, "initialized"),);
-    env.events().publish(topics, (admin.clone(), token.clone()));
+    env.events()
+        .publish((Symbol::new(env, "initialized"),), (admin.clone(), token.clone()));
 }
 
 pub fn wrapped(env: &Env, user: &Address, amount: i128, total: i128) {
-    let topics = (Symbol::new(env, "wrapped"),);
-    env.events().publish(topics, (user.clone(), amount, total));
+    env.events()
+        .publish((Symbol::new(env, "wrapped"),), (user.clone(), amount, total));
 }
 
 pub fn unwrapped(env: &Env, user: &Address, amount: i128, total: i128) {
-    let topics = (Symbol::new(env, "unwrapped"),);
-    env.events().publish(topics, (user.clone(), amount, total));
+    env.events()
+        .publish((Symbol::new(env, "unwrapped"),), (user.clone(), amount, total));
+}
+
+/// Emitted when the minimum wrap/unwrap amount configuration changes.
+pub fn min_amount_updated(env: &Env, admin: &Address, min_amount: Option<i128>) {
+    env.events().publish(
+        (Symbol::new(env, "min_amount_updated"),),
+        (admin.clone(), min_amount),
+    );
 }
 
 /// Emitted when the contract is paused. Only used when the `pausable` feature is enabled.
@@ -51,3 +59,4 @@ pub fn fee_collected(env: &Env, op: Symbol, payer: &Address, recipient: &Address
 }
 
 use soroban_sdk::Symbol;
+}

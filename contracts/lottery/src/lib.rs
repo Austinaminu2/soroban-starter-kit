@@ -5,6 +5,10 @@
 //! Players buy tickets while the lottery is open; the admin commits to a hashed
 //! secret then reveals it to draw verifiable random winners.
 
+#[cfg(test)]
+#[macro_use]
+extern crate std;
+
 use soroban_sdk::{Address, BytesN, Env, Vec, contract, contractimpl, token};
 
 mod errors;
@@ -68,12 +72,18 @@ mod contract {
         /// `max_tickets_per_address`, if set, caps how many tickets a single address
         /// may buy in total across repeated calls to `buy_ticket`.
         ///
+        /// `fee_bps` is an optional operator rake in basis points (1–9 999). When set,
+        /// `fee_recipient` must also be provided; the fee is transferred to that address
+        /// at `draw` time before the winner prize pool is calculated.
+        ///
         /// # Errors
         /// - [`LotteryError::AlreadyInitialized`]
         /// - [`LotteryError::InvalidTicketPrice`] if ticket_price <= 0
         /// - [`LotteryError::InvalidWinnerConfig`] if winner_count is zero, `prize_splits` length
         ///   doesn't match `winner_count`, or the splits don't sum to 10 000 basis points
         /// - [`LotteryError::InvalidTicketCap`] if `max_tickets_per_address` is `Some(0)`
+        /// - [`LotteryError::InvalidFeeConfig`] if `fee_bps >= 10_000`, or exactly one of
+        ///   `fee_bps`/`fee_recipient` is set without the other
         pub fn initialize(
             env: Env,
             admin: Address,
@@ -82,6 +92,8 @@ mod contract {
             winner_count: u32,
             prize_splits: Vec<u32>,
             max_tickets_per_address: Option<u32>,
+            fee_bps: Option<u32>,
+            fee_recipient: Option<Address>,
         ) -> Result<(), LotteryError> {
             if env.storage().instance().has(&State) {
                 return Err(LotteryError::AlreadyInitialized);
@@ -105,6 +117,18 @@ mod contract {
             if max_tickets_per_address == Some(0) {
                 return Err(LotteryError::InvalidTicketCap);
             }
+
+            // Validate fee configuration: both must be set together, and bps must be < 10_000.
+            match (&fee_bps, &fee_recipient) {
+                (Some(bps), Some(_)) => {
+                    if *bps == 0 || *bps >= BPS_DENOMINATOR as u32 {
+                        return Err(LotteryError::InvalidFeeConfig);
+                    }
+                }
+                (None, None) => {}
+                _ => return Err(LotteryError::InvalidFeeConfig),
+            }
+
             admin.require_auth();
 
             env.storage().instance().set(&Admin, &admin);
@@ -118,6 +142,10 @@ mod contract {
             env.storage().instance().set(&PrizeSplits, &prize_splits);
             if let Some(cap) = max_tickets_per_address {
                 env.storage().instance().set(&MaxTicketsPerAddress, &cap);
+            }
+            if let (Some(bps), Some(recipient)) = (fee_bps, fee_recipient) {
+                env.storage().instance().set(&FeeBps, &bps);
+                env.storage().instance().set(&FeeRecipient, &recipient);
             }
 
             bump_instance(&env);
@@ -143,7 +171,7 @@ mod contract {
             let ticket_count: u32 = env
                 .storage()
                 .persistent()
-                .get(&TicketCount(&buyer))
+                .get(&TicketCount(buyer.clone()))
                 .unwrap_or(0);
             if let Some(cap) = env
                 .storage()
@@ -157,23 +185,24 @@ mod contract {
 
             let ticket_price: i128 = get_required(&env, &TicketPrice)?;
             let token_addr: Address = get_required(&env, &Token)?;
-            token::Client::new(&env, &token_addr).transfer(
-                &buyer,
-                &env.current_contract_address(),
-                &ticket_price,
-            );
 
             let mut participants: Vec<Address> = get_required(&env, &Participants)?;
-            participants.push_back(&buyer);
+            participants.push_back(buyer.clone());
             env.storage().instance().set(&Participants, &participants);
 
             env.storage()
                 .persistent()
-                .set(&TicketCount(&buyer), &(ticket_count + 1));
+                .set(&TicketCount(buyer.clone()), &(ticket_count + 1));
             env.storage().persistent().extend_ttl(
-                &TicketCount(&buyer),
+                &TicketCount(buyer.clone()),
                 LEDGER_LIFETIME_THRESHOLD,
                 LEDGER_BUMP_AMOUNT,
+            );
+
+            token::Client::new(&env, &token_addr).transfer(
+                &buyer,
+                &env.current_contract_address(),
+                &ticket_price,
             );
 
             bump_instance(&env);
@@ -275,7 +304,7 @@ mod contract {
             let mut seen: Vec<Address> = Vec::new(&env);
             for p in participants.iter() {
                 if !seen.contains(&p) {
-                    seen.push_back(&p);
+                    seen.push_back(p);
                 }
             }
             if seen.len() < winner_count {
@@ -294,17 +323,25 @@ mod contract {
 
                 #[allow(clippy::unwrap_used)] // idx is derived from modulo of len, always in bounds
                 let winner = pool.get(idx).unwrap();
-                winners.push_back(&winner);
+                winners.push_back(winner.clone());
 
                 // Remove every ticket held by this winner so they can't be drawn again.
                 let mut remaining = Vec::new(&env);
                 for p in pool.iter() {
                     if p != winner {
-                        remaining.push_back(&p);
+                        remaining.push_back(p);
                     }
                 }
                 pool = remaining;
             }
+
+            // Mark the draw complete before distributing the prize pool. If any transfer fails,
+            // the transaction reverts this state transition together with the failed call.
+            env.storage().instance().set(&State, &LotteryState::Drawn);
+            env.storage().instance().set(&Winners, &winners);
+            #[allow(clippy::unwrap_used)] // winner_count >= 1, validated at initialize
+            let first_winner = winners.get(0).unwrap();
+            env.storage().instance().set(&Winner, &first_winner);
 
             // Distribute the prize pool according to the configured splits.
             let ticket_price: i128 = get_required(&env, &TicketPrice)?;
@@ -313,22 +350,39 @@ mod contract {
             let token_addr: Address = get_required(&env, &Token)?;
             let token_client = token::Client::new(&env, &token_addr);
 
+            // Deduct the operator rake if configured, then distribute the remainder.
+            let distributable_prize = if let Some(fee_bps) = env
+                .storage()
+                .instance()
+                .get::<DataKey, u32>(&FeeBps)
+            {
+                #[allow(clippy::unwrap_used)] // fee_bps and fee_recipient are validated as a pair at initialize
+                let fee_recipient: Address = env.storage().instance().get(&FeeRecipient).unwrap();
+                let fee_amount = apply_bps_fee(total_prize, fee_bps).unwrap_or(0);
+                if fee_amount > 0 {
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &fee_recipient,
+                        &fee_amount,
+                    );
+                    events::fee_transferred(&env, &fee_recipient, fee_amount);
+                }
+                #[allow(clippy::arithmetic_side_effects)]
+                { total_prize - fee_amount }
+            } else {
+                total_prize
+            };
+
             for i in 0..winner_count {
                 #[allow(clippy::unwrap_used)] // i < winner_count == winners.len() == prize_splits.len()
                 let winner = winners.get(i).unwrap();
                 #[allow(clippy::unwrap_used)]
                 let split = prize_splits.get(i).unwrap();
                 #[allow(clippy::arithmetic_side_effects, clippy::integer_division)]
-                let amount = apply_bps_fee(total_prize, split).unwrap_or(0);
+                let amount = apply_bps_fee(distributable_prize, split).unwrap_or(0);
                 token_client.transfer(&env.current_contract_address(), &winner, &amount);
                 events::winner_drawn(&env, &winner, amount);
             }
-
-            env.storage().instance().set(&State, &LotteryState::Drawn);
-            env.storage().instance().set(&Winners, &winners);
-            #[allow(clippy::unwrap_used)] // winner_count >= 1, validated at initialize
-            let first_winner = winners.get(0).unwrap();
-            env.storage().instance().set(&Winner, &first_winner);
 
             bump_instance(&env);
             Ok(winners)
@@ -368,13 +422,15 @@ mod contract {
                         ticket_count += 1;
                     }
                 } else {
-                    remaining.push_back(&p);
+                    remaining.push_back(p);
                 }
             }
             if ticket_count == 0 {
                 return Err(LotteryError::NothingToRefund);
             }
             env.storage().instance().set(&Participants, &remaining);
+            // Clear the persistent TicketCount so this address can participate in future rounds.
+            env.storage().persistent().remove(&TicketCount(buyer.clone()));
 
             let ticket_price: i128 = get_required(&env, &TicketPrice)?;
             #[allow(clippy::arithmetic_side_effects)]

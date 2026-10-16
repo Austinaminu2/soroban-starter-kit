@@ -1,6 +1,7 @@
 // `#[contracterror]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
+use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
 #[contracterror]
@@ -23,7 +24,32 @@ pub enum LotteryError {
     InsufficientParticipants = 15,
     InvalidTicketCap = 16,
     TicketCapExceeded = 17,
+    /// `fee_bps` ≥ 10 000, or `fee_bps` > 0 without a `fee_recipient`, or
+    /// `fee_recipient` provided without a non-zero `fee_bps`.
+    InvalidFeeConfig = 18,
 }
+
+impl_display_error!(
+    LotteryError,
+    AlreadyInitialized      => "already initialized",
+    NotInitialized          => "not initialized",
+    Unauthorized            => "not authorized",
+    LotteryClosed           => "lottery closed",
+    DrawAlreadyDone         => "draw already done",
+    DrawNotDone             => "draw not done",
+    InvalidTicketPrice      => "invalid ticket price",
+    CommitAlreadySubmitted  => "commit already submitted",
+    RevealMismatch          => "reveal mismatch",
+    NoTickets               => "no tickets",
+    InvalidRevealDeadline   => "invalid reveal deadline",
+    RefundNotAvailable      => "refund not available",
+    NothingToRefund         => "nothing to refund",
+    InvalidWinnerConfig     => "invalid winner config",
+    InsufficientParticipants => "insufficient participants",
+    InvalidTicketCap        => "invalid ticket cap",
+    TicketCapExceeded       => "ticket cap exceeded",
+    InvalidFeeConfig        => "invalid fee config",
+);
 
 #[cfg(test)]
 mod tests {
@@ -53,7 +79,8 @@ LotteryError::NothingToRefund = {}\n\
 LotteryError::InvalidWinnerConfig = {}\n\
 LotteryError::InsufficientParticipants = {}\n\
 LotteryError::InvalidTicketCap = {}\n\
-LotteryError::TicketCapExceeded = {}\n",
+LotteryError::TicketCapExceeded = {}\n\
+LotteryError::InvalidFeeConfig = {}\n",
             LotteryError::AlreadyInitialized as u32,
             LotteryError::NotInitialized as u32,
             LotteryError::Unauthorized as u32,
@@ -71,6 +98,7 @@ LotteryError::TicketCapExceeded = {}\n",
             LotteryError::InsufficientParticipants as u32,
             LotteryError::InvalidTicketCap as u32,
             LotteryError::TicketCapExceeded as u32,
+            LotteryError::InvalidFeeConfig as u32,
         )
     }
 

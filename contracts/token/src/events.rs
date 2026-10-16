@@ -78,6 +78,30 @@ pub fn transferred(env: &Env, from: &Address, to: &Address, amount: i128) {
     );
 }
 
+/// Emitted when tokens are batch transferred.
+/// Topics: (Symbol, Address) — event name, from
+/// Data: Vec<(Address, i128)> — recipients and amounts
+pub fn transferred_batch(env: &Env, from: &Address, transfers: &soroban_sdk::Vec<(Address, i128)>) {
+    env.events().publish(
+        (Symbol::new(env, "transfer_batch"), from.clone()),
+        transfers.clone(),
+    );
+}
+
+/// Emitted for each individual recipient credit performed by
+/// `transfer_to_many`.
+/// Topics: (Symbol, Address, Address) — event name, from, to
+/// Data: amount
+///
+/// This mirrors the standard `transferred` event shape so that indexers can
+/// process multi-recipient payouts without special-casing them.
+pub fn transferred_many(env: &Env, from: &Address, to: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "transfer"), from.clone(), to.clone()),
+        amount,
+    );
+}
+
 /// Emitted when an account is frozen.
 /// Topics: (Symbol, Address) — event name, account
 pub fn account_frozen(env: &Env, account: &Address) {
@@ -90,6 +114,38 @@ pub fn account_frozen(env: &Env, account: &Address) {
 pub fn account_unfrozen(env: &Env, account: &Address) {
     env.events()
         .publish((Symbol::new(env, "account_unfrozen"), account.clone()), ());
+}
+
+/// Emitted when an account is permanently blacklisted.
+/// Topics: (Symbol, Address) — event name, account
+pub fn account_blacklisted(env: &Env, account: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "account_blacklisted"), account.clone()),
+        (),
+    );
+}
+
+/// Emitted when an account is removed from the blacklist.
+/// Topics: (Symbol, Address) — event name, account
+pub fn account_unblacklisted(env: &Env, account: &Address) {
+    env.events().publish(
+        (Symbol::new(env, "account_unblacklisted"), account.clone()),
+        (),
+    );
+}
+
+/// Emitted when blacklisted funds are confiscated to the compliance treasury.
+/// Topics: (Symbol, Address, Address) — event name, from, treasury
+/// Data: amount
+pub fn compliance_confiscated(env: &Env, from: &Address, treasury: &Address, amount: i128) {
+    env.events().publish(
+        (
+            Symbol::new(env, "compliance_confiscated"),
+            from.clone(),
+            treasury.clone(),
+        ),
+        amount,
+    );
 }
 
 /// Emitted when the contract is paused.
@@ -148,5 +204,15 @@ pub fn permit_used(env: &Env, owner: &Address, spender: &Address, amount: i128, 
             spender.clone(),
         ),
         (amount, nonce),
+    );
+}
+
+/// Emitted when an owner cancels a permit nonce, invalidating any signature
+/// that was signed for it.
+/// Topics: (Symbol, Address) — event name, owner
+pub fn permit_nonce_cancelled(env: &Env, owner: &Address, nonce: u32) {
+    env.events().publish(
+        (Symbol::new(env, "permit_nonce_cancelled"), owner.clone()),
+        nonce,
     );
 }

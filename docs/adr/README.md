@@ -20,6 +20,9 @@ For general reference documentation (development environment, deployment guides,
 | [0008](0008-multisig-arbiter-design.md) | Multi-sig Arbiter Design | Accepted |
 | [0009](0009-batch-mint-design.md) | Batch Mint Design — Atomicity & Cap Enforcement | Accepted |
 | [0010](0010-no-serde-wasm-targets.md) | No serde — use soroban-sdk native types only | Accepted |
+| [0011](0011-bonding-curve-state-machine.md) | Bonding-Curve State Machine Design | Accepted |
+| [0012](0012-subscription-state-machine.md) | Subscription State Machine Design | Accepted |
+| [0013](0013-wrapped-token-state-machine.md) | Wrapped-Token State Machine Design | Accepted |
 
 ## Format
 
@@ -30,3 +33,12 @@ Each ADR follows this structure:
 - **Context** — the problem and forces at play
 - **Decision** — what was decided
 - **Consequences** — trade-offs and follow-on implications
+
+## ⚠️ File placement rule
+
+**Only ADR files belong in this directory.** ADR files must:
+
+1. Follow the `NNNN-kebab-title.md` naming convention (e.g. `0011-my-decision.md`).
+2. Contain the `Status` / `Date` / `Context` / `Decision` / `Consequences` structure above.
+
+General reference documentation (dev environment, error codes, event catalogues, deployment guides, etc.) belongs in the parent `docs/` directory, not here. In the past, non-ADR files were accidentally left in this folder after a docs reorganisation and drifted out of sync with the canonical copies in `docs/`. If you are unsure where a document belongs, put it in `docs/` and link to it from here if relevant.

@@ -80,14 +80,19 @@ All token events are emitted by `contracts/token` and follow this structure:
 | `mint` | `Symbol("mint")` | `Address` (recipient) | — | `i128` (amount) |
 | `burn` | `Symbol("burn")` | `Address` (account) | — | `i128` (amount) |
 | `transfer` | `Symbol("transfer")` | `Address` (from) | `Address` (to) | `i128` (amount) |
+| `account_frozen` | `Symbol("account_frozen")` | `Address` (account) | — | `()` |
+| `account_unfrozen` | `Symbol("account_unfrozen")` | `Address` (account) | — | `()` |
 | `approve` | `Symbol("approve")` | `Address` (owner) | `Address` (spender) | `i128` (amount) |
 | `revoke` | `Symbol("revoke")` | `Address` (owner) | `Address` (spender) | `()` |
 | `admin_changed` | `Symbol("admin_changed")` | `Address` (old admin) | — | `Address` (new admin) |
 | `admin_proposed` | `Symbol("admin_proposed")` | `Address` (current admin) | — | `Address` (pending admin) |
 | `admin_accepted` | `Symbol("admin_accepted")` | `Address` (new admin) | — | `()` |
+| `admin_proposal_cancelled` | `Symbol("admin_proposal_cancelled")` | `Address` (admin) | — | `()` |
 | `paused` | `Symbol("paused")` | `Address` (admin) | — | `()` |
 | `unpaused` | `Symbol("unpaused")` | `Address` (admin) | — | `()` |
 | `upgraded` | `Symbol("upgraded")` | `Address` (admin) | — | `BytesN<32>` (wasm hash) |
+| `hook_set` | `Symbol("hook_set")` | `Address` (admin) | — | `Option<Address>` (hook; `None` to clear) |
+| `snapshot` | `Symbol("snapshot")` | `Address` (account) | `u32` (ledger) | `i128` (balance) |
 | `permit_signer_set` | `Symbol("permit_signer_set")` | `Address` (owner) | — | `()` |
 | `permit_used` | `Symbol("permit_used")` | `Address` (owner) | `Address` (spender) | `(i128 amount, u32 nonce)` |
 
@@ -97,6 +102,14 @@ changes via `approve`/`revoke` needs no special-casing for signature-granted
 allowances. Watch `permit_signer_set` for unexpected signer rotations — a
 rotation invalidates all outstanding, unsubmitted permits signed with the
 previous key.
+
+`account_frozen` / `account_unfrozen` are the compliance freeze signals — index
+both if you need to know which accounts currently cannot transfer. `hook_set`
+fires from `set_transfer_hook` (data is `None` when the hook is cleared).
+`snapshot` is the governance balance snapshot from `snapshot()` (issue #717);
+topic[2] is the ledger the snapshot is recorded against. `admin_proposal_cancelled`
+fires when the current admin aborts a pending two-step admin transfer via
+`cancel_admin_proposal`.
 
 ### Escrow Contract Events
 
@@ -125,9 +138,17 @@ Events emitted by `contracts/subscription`:
 | Event | Topic[0] | Topic[1] | Topic[2] | Data |
 |-------|----------|----------|----------|------|
 | `initialized` | `Symbol("initialized")` | `Address` (provider) | — | `Address` (token) |
-| `subscribed` | `Symbol("subscribed")` | `Address` (subscriber) | — | `(i128 amount, u32 interval_ledgers)` |
+| `plan_registered` | `Symbol("plan_registered")` | `Symbol` (plan_id) | — | `(i128 amount, u32 interval_ledgers)` |
+| `plan_updated` | `Symbol("plan_updated")` | `Symbol` (plan_id) | — | `bool` (active) |
+| `subscribed` | `Symbol("subscribed")` | `Address` (subscriber) | — | `(Symbol plan_id, i128 amount, u32 interval_ledgers)` |
 | `charged` | `Symbol("charged")` | `Address` (subscriber) | `Address` (provider) | `i128` (amount) |
 | `cancelled` | `Symbol("cancelled")` | `Address` (subscriber) | — | `()` |
+| `trial_completed` | `Symbol("trial_completed")` | `Address` (subscriber) | — | `()` |
+
+`plan_registered` fires from `register_plan`; `plan_updated` from `set_plan_active`.
+`subscribed` data includes `plan_id` so an indexer can join a subscription to its plan
+without a separate lookup. `trial_completed` is emitted from `charge()` when a
+subscriber's trial period ends (no separate `complete_trial` entry point).
 
 ### Wrapped-Token Contract Events
 
@@ -756,6 +777,20 @@ Prometheus datasource and the metrics described in §10. Replace the
 > config so it is recreated on every environment.
 
 ---
+## 11. Example Grafana Dashboard
+
+An importable starter dashboard is checked in at [`examples/grafana/contract-events.json`](../examples/grafana/contract-events.json). It visualizes event volume, event-processing error rate, and errors observed in the last hour, with a contract selector for operators.
+
+The dashboard expects a Prometheus adapter to expose these counters with a `contract` label:
+
+| Metric | Required label | Meaning |
+|---|---|---|
+| `soroban_contract_events_total` | `contract` | Counter of decoded events by contract |
+| `soroban_contract_events_errors_total` | `contract` | Counter of event decoding or processing errors by contract |
+
+To import it, open **Dashboards → Import** in Grafana, upload the JSON file, select the Prometheus data source, and click **Import**. If the adapter uses different metric names, update the panel PromQL expressions after import. The `clamp_min` expression in the error-rate panel avoids division by zero for contracts with no recent events.
+
+This export is an operator starting point rather than a complete alert policy. Pair it with alerts for sustained ingestion errors, missing event traffic, RPC failures, and contract-specific invariants such as the wrapped-token reserve check documented above.
 
 ## 12. Resources
 
@@ -764,3 +799,461 @@ Prometheus datasource and the metrics described in §10. Replace the
 - [Stellar Expert Explorer](https://stellar.expert)
 - [soroban-sdk event docs](https://docs.rs/soroban-sdk/latest/soroban_sdk/struct.Events.html)
 - [XDR types reference](https://developers.stellar.org/docs/learn/fundamentals/transactions/list-of-operations)
+
+
+## 8. Failed-Transaction Alert Rules
+
+The examples below assume an indexer exports monotonically increasing counters named `soroban_transactions_total` and `soroban_transaction_failures_total`, each labeled with `contract_id` and `contract_name`. Adjust the window and thresholds to the normal traffic profile of each deployment; use `for` to avoid paging on a single transient failure.
+
+```yaml
+groups:
+  - name: soroban-transaction-health
+    rules:
+      - alert: SorobanContractFailureRateHigh
+        expr: |
+          (
+            sum by (contract_id, contract_name) (
+              increase(soroban_transaction_failures_total[10m])
+            )
+            /
+            clamp_min(
+              sum by (contract_id, contract_name) (
+                increase(soroban_transactions_total[10m])
+              ), 1
+            )
+          ) > 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated failed-transaction rate for {{ $labels.contract_name }}"
+          description: "More than 10% of transactions failed for 15 minutes. Check recent deployments, authorization errors, and dependency health."
+
+      - alert: SorobanContractFailureRateCritical
+        expr: |
+          (
+            sum by (contract_id, contract_name) (
+              increase(soroban_transaction_failures_total[5m])
+            )
+            /
+            clamp_min(
+              sum by (contract_id, contract_name) (
+                increase(soroban_transactions_total[5m])
+              ), 1
+            )
+          ) > 0.25
+          and
+          sum by (contract_id, contract_name) (
+            increase(soroban_transactions_total[5m])
+          ) >= 20
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical failed-transaction rate for {{ $labels.contract_name }}"
+          description: "At least 20 transactions were observed and more than 25% failed in each five-minute window. Investigate immediately and consider pausing the affected contract."
+
+      - alert: SorobanContractFailureBurst
+        expr: |
+          sum by (contract_id, contract_name) (
+            increase(soroban_transaction_failures_total[5m])
+          ) >= 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Failed-transaction burst for {{ $labels.contract_name }}"
+          description: "At least 10 failed transactions occurred in five minutes. This catches incidents even when total traffic is too low for a percentage threshold."
+```
+
+The 10% warning threshold is intended to identify degradation before it becomes a widespread outage. The 25% critical threshold requires at least 20 attempts so that a low-volume contract does not page on a single failure. The burst rule is complementary: it detects a sustained absolute spike and is useful for contracts with uneven traffic. Route alerts by `contract_id`, include the deployment environment in the metric labels, and link each alert to the relevant runbook and transaction/event dashboard.
+
+
+---
+
+## 13. TTL Monitoring and Automated Renewal (Issue #1214)
+
+Soroban ledger entries have a Time-To-Live (TTL). When a contract's instance
+storage or persistent keys fall below `LEDGER_LIFETIME_THRESHOLD` (~7 days at
+5 s/ledger ≈ 120 960 ledgers), the entry enters an **archived** state. An
+archived entry is not directly readable and must be restored via
+`restoreFootprint` before the contract can process transactions — this is an
+operational incident. Proactive TTL renewal prevents archival from ever
+occurring in production.
+
+### TTL constants (from soroban-common)
+
+| Constant | Value | Approximate time |
+|----------|------:|-----------------|
+| `LEDGER_LIFETIME_THRESHOLD` | 120 960 ledgers | ~7 days |
+| `LEDGER_BUMP_AMOUNT` | 518 400 ledgers | ~30 days |
+
+Every state-mutating contract function calls `extend_ttl_instance` / `extend_ttl_persistent`,
+which bumps the TTL to `LEDGER_BUMP_AMOUNT` when it falls below `LEDGER_LIFETIME_THRESHOLD`.
+The TTL daemon is a belt-and-suspenders measure for contracts that may be
+idle for extended periods (e.g., timelocks awaiting their release ledger).
+
+### scripts/renew-ttl.py
+
+The daemon script is at [`scripts/renew-ttl.py`](../scripts/renew-ttl.py).
+It queries TTL via the Soroban RPC `getLedgerEntries` endpoint, submits
+`extendFootprintTtl` transactions via the `stellar` CLI when entries are near
+expiry, and sends webhook alerts when entries enter the alert window.
+
+#### Quick start
+
+```bash
+# Install dependencies
+pip install requests stellar-sdk
+
+# Create a config file (see script docstring for full schema)
+cat > renew-ttl.json <<'EOF'
+{
+  "rpc_url": "https://soroban-testnet.stellar.org",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "source_account": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "contracts": [
+    { "id": "CTOKEN...", "name": "token",  "keys": ["instance"] },
+    { "id": "CESCROW.", "name": "escrow",  "keys": ["instance"] },
+    { "id": "CSUBS...", "name": "subscription", "keys": ["instance"] }
+  ],
+  "ledger_lifetime_threshold": 120960,
+  "ledger_bump_amount": 518400,
+  "alert_threshold_ledgers": 17280,
+  "poll_interval_seconds": 300,
+  "webhook_url": "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+}
+EOF
+
+# Dry run first (no transactions submitted)
+python3 scripts/renew-ttl.py --config renew-ttl.json --dry-run
+
+# One-shot check and exit
+python3 scripts/renew-ttl.py --config renew-ttl.json --once
+
+# Run as a daemon (polls every poll_interval_seconds)
+STELLAR_SECRET_KEY=SXXX... python3 scripts/renew-ttl.py --config renew-ttl.json
+```
+
+#### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `STELLAR_SECRET_KEY` | Signing key for `extendFootprintTtl` transactions |
+| `RPC_URL` | Override `rpc_url` in config |
+| `NETWORK_PASSPHRASE` | Override `network_passphrase` in config |
+| `WEBHOOK_URL` | Override `webhook_url` in config |
+
+#### Running as a systemd service
+
+```ini
+# /etc/systemd/system/soroban-ttl-renew.service
+[Unit]
+Description=Soroban TTL Renewal Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=soroban
+WorkingDirectory=/opt/soroban
+ExecStart=/usr/bin/python3 /opt/soroban/scripts/renew-ttl.py --config /etc/soroban/renew-ttl.json
+Environment=STELLAR_SECRET_KEY=SXXX...
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now soroban-ttl-renew
+journalctl -u soroban-ttl-renew -f
+```
+
+#### Running in Kubernetes (CronJob)
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: soroban-ttl-renew
+spec:
+  schedule: "*/5 * * * *"   # Every 5 minutes
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: renew-ttl
+              image: python:3.12-slim
+              command:
+                - python3
+                - /scripts/renew-ttl.py
+                - --config
+                - /config/renew-ttl.json
+                - --once
+              env:
+                - name: STELLAR_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: stellar-keys
+                      key: secret-key
+              volumeMounts:
+                - name: config
+                  mountPath: /config
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: config
+              configMap:
+                name: soroban-ttl-config
+            - name: scripts
+              configMap:
+                name: soroban-scripts
+```
+
+### Prometheus alert rules for TTL
+
+Add these to your Prometheus rules file. They assume the daemon exports
+metrics via a Prometheus pushgateway or a metrics exporter sidecar.
+
+```yaml
+groups:
+  - name: soroban-ttl
+    rules:
+      - alert: SorobanEntryApproachingArchival
+        expr: |
+          soroban_ttl_remaining_ledgers < 17280
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Soroban entry TTL low: {{ $labels.contract_name }}"
+          description: |
+            Contract {{ $labels.contract_name }} ({{ $labels.contract_id }})
+            has only {{ $value }} ledgers (~{{ printf "%.1f" (div $value 720.0) }} hours)
+            before archival. Check that renew-ttl.py is running and STELLAR_SECRET_KEY is set.
+
+      - alert: SorobanEntryArchivedOrMissing
+        expr: |
+          soroban_ttl_entry_missing == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Soroban entry archived or missing: {{ $labels.contract_name }}"
+          description: |
+            The entry for {{ $labels.contract_name }} ({{ $labels.contract_id }})
+            could not be found via getLedgerEntries. It may already be archived.
+            Run 'stellar contract restore --id <CONTRACT_ID>' immediately to restore it.
+```
+
+### Recovering from archival
+
+If an entry has already been archived before the daemon could renew it:
+
+```bash
+# Restore the archived entry (requires a funded account)
+stellar contract restore \
+  --id <CONTRACT_ID> \
+  --source-account <ACCOUNT> \
+  --network testnet
+
+# Verify the entry is accessible again
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --network testnet \
+  -- <any_read_function>
+
+# Restart the TTL renewal daemon to prevent re-archival
+python3 scripts/renew-ttl.py --config renew-ttl.json --once
+```
+
+### Recommended operational thresholds
+
+| Threshold | Ledgers | Approximate time | Action |
+|-----------|--------:|-----------------|--------|
+| `LEDGER_BUMP_AMOUNT` | 518 400 | ~30 days | Target TTL after renewal |
+| `LEDGER_LIFETIME_THRESHOLD` | 120 960 | ~7 days | Daemon triggers renewal |
+| `alert_threshold_ledgers` | 17 280 | ~24 hours | Webhook alert fired |
+| Critical alert | < 1 440 | ~2 hours | Page on-call immediately |
+
+Set `poll_interval_seconds = 300` (5 minutes) in production. This gives the
+daemon 288 opportunities to renew before an entry at `LEDGER_LIFETIME_THRESHOLD`
+reaches zero. A single transient RPC failure will not cause archival.
+
+---
+
+## 13. TTL Monitoring and Automated Renewal
+
+Soroban ledger entries have a Time-To-Live (TTL). When a contract's instance
+storage or persistent keys fall below `LEDGER_LIFETIME_THRESHOLD` (~7 days),
+the entry enters an **archived** state and is no longer directly readable.
+Proactive TTL renewal prevents archival from ever occurring in production.
+
+### TTL constants (from soroban-common)
+
+| Constant | Ledgers | Approximate time |
+|----------|--------:|-----------------|
+| `LEDGER_LIFETIME_THRESHOLD` | 120 960 | ~7 days |
+| `LEDGER_BUMP_AMOUNT` | 518 400 | ~30 days |
+
+### scripts/renew-ttl.py
+
+The daemon at [`scripts/renew-ttl.py`](../scripts/renew-ttl.py) queries TTL via
+the Soroban RPC `getLedgerEntries` endpoint, submits `extendFootprintTtl`
+transactions via the `stellar` CLI when entries are near expiry, and sends
+webhook alerts when entries enter the alert window.
+
+#### Quick start
+
+```bash
+# Install dependencies
+pip install requests stellar-sdk
+
+# Create a config file
+cat > renew-ttl.json <<'EOF'
+{
+  "rpc_url": "https://soroban-testnet.stellar.org",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "source_account": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  "contracts": [
+    { "id": "CTOKEN...", "name": "token",  "keys": ["instance"] },
+    { "id": "CESCROW.", "name": "escrow",  "keys": ["instance"] }
+  ],
+  "ledger_lifetime_threshold": 120960,
+  "ledger_bump_amount": 518400,
+  "alert_threshold_ledgers": 17280,
+  "poll_interval_seconds": 300,
+  "webhook_url": "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+}
+EOF
+
+# Dry run (no transactions submitted)
+python3 scripts/renew-ttl.py --config renew-ttl.json --dry-run
+
+# One-shot check and exit
+python3 scripts/renew-ttl.py --config renew-ttl.json --once
+
+# Daemon mode
+STELLAR_SECRET_KEY=SXXX... python3 scripts/renew-ttl.py --config renew-ttl.json
+```
+
+#### Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `STELLAR_SECRET_KEY` | Signing key for `extendFootprintTtl` transactions |
+| `RPC_URL` | Override `rpc_url` in config |
+| `NETWORK_PASSPHRASE` | Override `network_passphrase` in config |
+| `WEBHOOK_URL` | Override `webhook_url` in config |
+
+#### systemd service
+
+```ini
+# /etc/systemd/system/soroban-ttl-renew.service
+[Unit]
+Description=Soroban TTL Renewal Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=soroban
+WorkingDirectory=/opt/soroban
+ExecStart=/usr/bin/python3 /opt/soroban/scripts/renew-ttl.py --config /etc/soroban/renew-ttl.json
+Environment=STELLAR_SECRET_KEY=SXXX...
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload
+systemctl enable --now soroban-ttl-renew
+journalctl -u soroban-ttl-renew -f
+```
+
+#### Kubernetes CronJob
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: soroban-ttl-renew
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: renew-ttl
+              image: python:3.12-slim
+              command: ["python3", "/scripts/renew-ttl.py", "--config", "/config/renew-ttl.json", "--once"]
+              env:
+                - name: STELLAR_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: stellar-keys
+                      key: secret-key
+```
+
+### Prometheus alert rules for TTL
+
+```yaml
+groups:
+  - name: soroban-ttl
+    rules:
+      - alert: SorobanEntryApproachingArchival
+        expr: soroban_ttl_remaining_ledgers < 17280
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Soroban entry TTL low: {{ $labels.contract_name }}"
+          description: "Only {{ $value }} ledgers before archival. Verify renew-ttl.py is running."
+
+      - alert: SorobanEntryArchivedOrMissing
+        expr: soroban_ttl_entry_missing == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Soroban entry archived: {{ $labels.contract_name }}"
+          description: "Entry not found via getLedgerEntries. Run 'stellar contract restore --id <ID>' immediately."
+```
+
+### Recovering from archival
+
+```bash
+# Restore the archived entry
+stellar contract restore \
+  --id <CONTRACT_ID> \
+  --source-account <ACCOUNT> \
+  --network testnet
+
+# Restart the daemon to prevent re-archival
+python3 scripts/renew-ttl.py --config renew-ttl.json --once
+```
+
+### Recommended operational thresholds
+
+| Threshold | Ledgers | ~Time | Action |
+|-----------|--------:|-------|--------|
+| `LEDGER_BUMP_AMOUNT` | 518 400 | ~30 days | Target TTL after renewal |
+| `LEDGER_LIFETIME_THRESHOLD` | 120 960 | ~7 days | Daemon triggers renewal |
+| `alert_threshold_ledgers` | 17 280 | ~24 hours | Webhook alert fired |
+| Critical page | < 1 440 | ~2 hours | Page on-call immediately |
+
+Set `poll_interval_seconds = 300` (5 minutes) in production — this gives the
+daemon 288 renewal opportunities before an entry at `LEDGER_LIFETIME_THRESHOLD`
+reaches zero.

@@ -1,16 +1,11 @@
-// `#[contracterror]` generates undocumented public associated items.
-#![allow(missing_docs)]
-
 use soroban_sdk::contracterror;
 
 #[contracterror]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum AirdropError {
-    /// `initialize` called on an already-initialized contract.
     AlreadyInitialized = 1,
-    /// Operation attempted before the contract was initialized.
     NotInitialized = 2,
-    /// Caller is not the admin.
     Unauthorized = 3,
     /// Merkle root has not been set yet.
     RootNotSet = 4,
@@ -22,6 +17,20 @@ pub enum AirdropError {
     InvalidAmount = 7,
     /// The claim deadline has passed; no further claims are accepted.
     ClaimWindowClosed = 8,
+    /// The contract does not hold enough unlocked balance of the token to pay the claim.
+    InsufficientBalance = 9,
+    /// Vesting parameters are out of range.
+    InvalidVestingConfig = 10,
+    /// No vesting schedule exists for this recipient and token.
+    NoVestingSchedule = 11,
+    /// No vested tokens are currently releasable.
+    NothingToRelease = 12,
+    /// A batch contains the same `(recipient, token)` pair more than once.
+    DuplicateEntry = 13,
+    /// An arithmetic operation overflowed.
+    ArithmeticOverflow = 14,
+    /// `claim_batch` was called with no entries.
+    EmptyBatch = 15,
 }
 
 #[cfg(test)]
@@ -62,4 +71,14 @@ AirdropError::ClaimWindowClosed = {}\n",
             include_str!("../snapshots/error_codes.snap")
         );
     }
+    ClaimWindowClosed = 4,
+    ClaimWindowNotClosed = 5,
+    NothingToSweep = 6,
+    InvalidDeadline = 7,
+    InvalidAmount = 8,
+    AlreadyClaimed = 9,
+    InvalidProof = 10,
+    RootNotSet = 11,
+    RoundActive = 12,
+    InvalidSignature = 13,
 }

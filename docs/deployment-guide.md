@@ -259,14 +259,14 @@ WASM Hash: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 
 ---
 
-## 3b. Post-Deploy Initialization
+## 5. Post-Deploy Initialization
 
 After deploying contracts, run the initialization script to call each contract's `initialize` function:
 
 ```bash
-# Populate .contract-ids with deployed IDs (one per line: name=CONTRACT_ID)
-echo "token=CABC..." >> .contract-ids
-echo "escrow=CDEF..." >> .contract-ids
+# Populate .contract-ids with deployed IDs (format written by deploy.sh: name: CONTRACT_ID)
+echo "token: CABC..." >> .contract-ids
+echo "escrow: CDEF..." >> .contract-ids
 
 # Initialize all contracts on the current network
 ./scripts/initialize.sh testnet   # or local / mainnet
@@ -285,7 +285,7 @@ The script is idempotent: contracts that return an "already initialized" error a
 
 ---
 
-## 5. Mainnet Deployment
+## 6. Mainnet Deployment
 
 > ⚠️ Mainnet deployments are irreversible. Complete testnet validation first.
 
@@ -306,7 +306,7 @@ stellar contract deploy --wasm <path>.wasm \
 
 ---
 
-## 6. Frontend Deployment
+## 7. Frontend Deployment
 
 ### Build
 
@@ -337,7 +337,7 @@ npm run build
 
 ---
 
-## 7. CI/CD Pipeline
+## 8. CI/CD Pipeline
 
 The GitHub Actions workflow at `.github/workflows/ci.yml` runs on every push:
 
@@ -384,7 +384,7 @@ NDJSON stream, you can pipe it straight into a log aggregator or filter it with
 
 ---
 
-## 8. Automated Guide Generation
+## 9. Automated Guide Generation
 
 Run the docs check script to validate documentation coverage and regenerate the docs report:
 
@@ -402,7 +402,7 @@ node scripts/generate-guides.mjs
 
 ---
 
-## 9. Validation Checklist
+## 10. Validation Checklist
 
 ### Pre-deployment
 
@@ -415,7 +415,7 @@ node scripts/generate-guides.mjs
 
 ### Post-deployment
 
-- [ ] **Contract health verified** — run `./scripts/check-contract-ids.sh` (see §13)
+- [ ] **Contract health verified** — run `./scripts/check-contract-ids.sh` (see §15)
 - [ ] Contract responds to `simulate` calls
 - [ ] Frontend connects to the correct RPC endpoint
 - [ ] Admin functions are restricted to the correct address
@@ -424,7 +424,7 @@ node scripts/generate-guides.mjs
 
 ---
 
-## 10. Security Considerations
+## 11. Security Considerations
 
 - Store `STELLAR_SECRET_KEY` only in CI secrets, never in `.env` committed to git
 - Use separate deployer accounts per environment (local / testnet / mainnet)
@@ -439,7 +439,7 @@ node scripts/generate-guides.mjs
 
 ---
 
-## 11. Performance Optimization
+## 12. Performance Optimization
 
 - Build contracts with `--release` flag (default in `deploy.sh`)
 - Minimize contract storage reads — cache values in `Env::storage().instance()`
@@ -526,7 +526,7 @@ To track WASM sizes across PRs, add a step to your CI workflow:
 
 ---
 
-## 12. Contract Upgrades (Timelock)
+## 13. Contract Upgrades (Timelock)
 
 Both the Token and Escrow contracts enforce a **two-step upgrade process** when
 built with the `upgradeable` / `pausable` feature flags. A minimum delay of
@@ -579,7 +579,7 @@ upgrade as complete.
 
 ---
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 ### Identity and Funding Issues
 
@@ -605,7 +605,7 @@ upgrade as complete.
 
 ---
 
-## 13. Post-Deployment Contract Verification
+## 15. Post-Deployment Contract Verification
 
 After deploying, confirm that every contract in `.contract-ids` is alive:
 
@@ -613,7 +613,7 @@ After deploying, confirm that every contract in `.contract-ids` is alive:
 ./scripts/check-contract-ids.sh
 ```
 
-The script reads `.contract-ids` (format: `name=<CONTRACT_ID>`), invokes `get_state`
+The script reads `.contract-ids` (format: `name: <CONTRACT_ID>`, written by `deploy.sh`), invokes `contract_version`
 on each contract, and categorises results:
 
 | Status | Meaning |
@@ -634,7 +634,7 @@ suitable for use in CI/CD pipelines.
 
 ---
 
-## 14. Escrow Status Monitoring
+## 16. Escrow Status Monitoring
 
 After deploying an escrow contract, use `scripts/monitor-escrow.sh` to check its current state at any time:
 
@@ -676,18 +676,7 @@ The script also prints a warning when the deadline has passed and funds are stil
 
 ---
 
-## Resources
-
-- [Stellar CLI Reference](https://developers.stellar.org/docs/tools/stellar-cli)
-- [Soroban Deployment Docs](https://soroban.stellar.org/docs/getting-started/deploy-to-testnet)
-- [Stellar Friendbot (testnet funding)](https://friendbot.stellar.org)
-- [Stellar Laboratory](https://laboratory.stellar.org/)
-- [cargo-audit](https://crates.io/crates/cargo-audit)
-- [Contract Monitoring Guide](./monitoring.md) — event indexing, anomaly detection, Prometheus alerts, and a sample Grafana dashboard for deployed contracts
-
----
-
-## 14. Monitoring Token Contract Status
+## 17. Monitoring Token Contract Status
 
 Use `scripts/monitor-token.sh` to quickly inspect a deployed token contract:
 
@@ -728,7 +717,7 @@ export TOKEN_CONTRACT_ID=<CONTRACT_ID>
 
 ---
 
-## 15. Cargo Feature Defaults
+## 18. Cargo Feature Defaults
 
 `scripts/deploy.sh` and `scripts/deploy-all.sh` run a bare `stellar contract
 build` with no `--features` flag, so a contract's compiled-in capabilities are
@@ -752,3 +741,112 @@ release WASM. It parses each WASM's export section directly (no `wasm-tools`
 dependency) and fails CI if an expected feature-gated function — e.g.
 `pause`, `execute_upgrade`, `max_supply` — is missing, so a default silently
 regressing to off is caught before it reaches a deploy.
+
+---
+
+## 14. Reproducible Builds and WASM Verification
+
+Cryptographic certainty that the on-chain WASM matches the open-source
+repository is critical for security-sensitive deployments. This section
+describes how to reproduce a build and verify it against a published release.
+
+### Why reproducible builds?
+
+When a contract is deployed on Stellar, only the compiled WASM binary is stored
+on-chain — not the source code. A reproducible build allows anyone to:
+
+1. Clone the repository at the exact release commit.
+2. Build the WASMs inside a pinned Docker container.
+3. Compare the SHA-256 hashes of the locally-built WASMs against the hashes
+   published in the GitHub Release.
+
+If the hashes match, the on-chain bytecode provably corresponds to the
+published source.
+
+### Dockerfile.reproducible
+
+The file [`docker/Dockerfile.reproducible`](../docker/Dockerfile.reproducible)
+creates a fully-pinned build environment:
+
+| Pin | Value | Purpose |
+|-----|-------|---------|
+| Rust toolchain | `rust-toolchain.toml` | Eliminates compiler version drift |
+| `stellar-cli` | `--version 21.7.7 --locked` | Matches SDK version |
+| `RUSTFLAGS` | `-C codegen-units=1 -C opt-level=z` | Removes parallelism non-determinism |
+| `SOURCE_DATE_EPOCH` | Git commit timestamp | Deterministic embedded timestamps |
+| `wasm-opt` | Deterministic flags (`-Oz --zero-filled-memory`) | Deterministic wasm-opt output |
+
+### Building locally
+
+```bash
+# Build with the git commit timestamp of the current HEAD
+docker build \
+  --build-arg GIT_COMMIT_EPOCH=$(git log -1 --format=%ct) \
+  --no-cache \
+  -f docker/Dockerfile.reproducible \
+  -t soroban-reproducible:local \
+  .
+
+# Extract the WASMs
+mkdir -p wasm-out
+docker run --rm \
+  -v "$PWD/wasm-out:/out" \
+  soroban-reproducible:local \
+  sh -c "cp /wasm/*.wasm /wasm/checksums.sha256 /out/"
+
+# Inspect checksums
+cat wasm-out/checksums.sha256
+```
+
+### Verifying against a published release
+
+Use `scripts/verify-reproducible-wasm.sh` to automate the comparison:
+
+```bash
+# Verify against a specific GitHub release tag
+./scripts/verify-reproducible-wasm.sh --tag v1.2.3
+
+# Verify against a locally-downloaded checksums file
+./scripts/verify-reproducible-wasm.sh --checksums path/to/checksums.sha256
+
+# Skip the Docker build (use an already-built image)
+./scripts/verify-reproducible-wasm.sh --tag v1.2.3 --skip-build
+```
+
+Exit code `0` means all hashes matched. Exit code `1` means at least one
+hash differs — the script prints a diff showing which files mismatched and
+their respective hashes.
+
+### CI integration
+
+The `release` job in `.github/workflows/release.yml` automatically:
+
+1. Builds all contracts with the standard `stellar contract build` pipeline.
+2. Builds the same contracts inside `docker/Dockerfile.reproducible`.
+3. Compares the two sets of SHA-256 hashes.
+4. Fails the release if any hash differs.
+5. Uploads the reproducible-build WASMs as a release artifact alongside the
+   standard ones, so end-users can download both and cross-check independently.
+
+### On-chain hash verification
+
+After deployment, verify the on-chain hash matches your build:
+
+```bash
+# Get the on-chain WASM hash for a deployed contract
+stellar contract info --id <CONTRACT_ID> --network mainnet | grep wasm_hash
+
+# Compare with your local build
+sha256sum wasm-out/soroban_token_template.wasm
+```
+
+---
+
+## Resources
+
+- [Stellar CLI Reference](https://developers.stellar.org/docs/tools/stellar-cli)
+- [Soroban Deployment Docs](https://soroban.stellar.org/docs/getting-started/deploy-to-testnet)
+- [Stellar Friendbot (testnet funding)](https://friendbot.stellar.org)
+- [Stellar Laboratory](https://laboratory.stellar.org/)
+- [cargo-audit](https://crates.io/crates/cargo-audit)
+- [Contract Monitoring Guide](./monitoring.md) — event indexing, anomaly detection, Prometheus alerts, and a sample Grafana dashboard for deployed contracts

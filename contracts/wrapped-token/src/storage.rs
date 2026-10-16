@@ -33,6 +33,23 @@ pub enum DataKey {
     UnwrapFeeBps,
     /// Instance storage – address receiving collected protocol fees (`Address`).
     FeeRecipient,
+    /// Instance storage – optional cap on the aggregate amount unwrapped
+    /// inside one sliding ledger window (`i128`). Absent means unlimited.
+    UnwrapRateLimit,
+    /// Instance storage – length of the unwrap rate-limit window in ledgers (`u32`).
+    UnwrapRateWindow,
+    /// Instance storage – `(window_start_ledger, amount_unwrapped)` for the
+    /// current unwrap rate-limit window.
+    UnwrapRateUsage,
+    /// Instance storage – when `true`, the unwrap rate limit is paused and
+    /// unwraps are not throttled (admin migration bypass).
+    UnwrapRateLimitPaused,
+    /// Instance storage – optional proof-of-reserve oracle contract (`Address`).
+    /// Absent means wrapping is not checked against an external reserve.
+    PorOracle,
+    /// Instance storage – optional minimum amount (`i128`) accepted by `wrap`
+    /// and `unwrap`. Absent means no minimum is enforced.
+    MinAmount,
 }
 
 #[cfg(test)]
@@ -60,6 +77,12 @@ mod discriminant_tests {
             DataKey::WrapFeeBps => 9,
             DataKey::UnwrapFeeBps => 10,
             DataKey::FeeRecipient => 11,
+            DataKey::UnwrapRateLimit => 7,
+            DataKey::UnwrapRateWindow => 8,
+            DataKey::UnwrapRateUsage => 9,
+            DataKey::UnwrapRateLimitPaused => 10,
+            DataKey::PorOracle => 11,
+            DataKey::MinAmount => 12,
         }
     }
 
@@ -78,5 +101,14 @@ mod discriminant_tests {
             wrapped_token_data_key_index(&DataKey::WrappedByAddress(addr)),
             6
         );
+        assert_eq!(wrapped_token_data_key_index(&DataKey::UnwrapRateLimit), 7);
+        assert_eq!(wrapped_token_data_key_index(&DataKey::UnwrapRateWindow), 8);
+        assert_eq!(wrapped_token_data_key_index(&DataKey::UnwrapRateUsage), 9);
+        assert_eq!(
+            wrapped_token_data_key_index(&DataKey::UnwrapRateLimitPaused),
+            10
+        );
+        assert_eq!(wrapped_token_data_key_index(&DataKey::PorOracle), 11);
+        assert_eq!(wrapped_token_data_key_index(&DataKey::MinAmount), 12);
     }
 }

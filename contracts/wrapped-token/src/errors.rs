@@ -1,24 +1,18 @@
 // `#[contracterror]` generates undocumented public associated items.
 #![allow(missing_docs)]
 
+use soroban_common::impl_display_error;
 use soroban_sdk::contracterror;
 
 #[contracterror]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WrappedTokenError {
-    /// `initialize` was called on an already-initialized contract.
     AlreadyInitialized = 1,
-    /// An operation was attempted before the contract was initialized.
     NotInitialized = 2,
-    /// Caller is not the admin.
     Unauthorized = 3,
-    /// Amount is zero or negative.
     InvalidAmount = 4,
-    /// Insufficient wrapped token balance to burn.
     InsufficientBalance = 5,
-    /// Insufficient XLM in reserve to unwrap.
     InsufficientReserve = 6,
-    /// Wrapping this amount would exceed the per-address cap set at `initialize`.
     MaxWrapExceeded = 7,
     /// An i128 supply or amount calculation overflowed.
     Overflow = 8,
@@ -26,7 +20,24 @@ pub enum WrappedTokenError {
     InvalidFee = 9,
     /// A batch call was given an empty recipient list.
     EmptyBatch = 10,
+    /// Aggregate unwrap volume in the current ledger window exceeded the cap.
+    RateLimitExceeded = 8,
+    /// Amount is below the configured minimum wrap/unwrap threshold.
+    AmountTooLow = 9,
 }
+
+impl_display_error!(
+    WrappedTokenError,
+    AlreadyInitialized  => "already initialized",
+    NotInitialized      => "not initialized",
+    Unauthorized        => "not authorized",
+    InvalidAmount       => "invalid amount",
+    InsufficientBalance => "insufficient balance",
+    InsufficientReserve => "insufficient reserve",
+    MaxWrapExceeded     => "max wrap exceeded",
+    RateLimitExceeded   => "unwrap rate limit exceeded",
+    AmountTooLow        => "amount below minimum",
+);
 
 #[cfg(test)]
 mod tests {
@@ -46,7 +57,9 @@ WrappedTokenError::Unauthorized = {}\n\
 WrappedTokenError::InvalidAmount = {}\n\
 WrappedTokenError::InsufficientBalance = {}\n\
 WrappedTokenError::InsufficientReserve = {}\n\
-WrappedTokenError::MaxWrapExceeded = {}\n",
+WrappedTokenError::MaxWrapExceeded = {}\n\
+WrappedTokenError::RateLimitExceeded = {}\n\
+WrappedTokenError::AmountTooLow = {}\n",
             WrappedTokenError::AlreadyInitialized as u32,
             WrappedTokenError::NotInitialized as u32,
             WrappedTokenError::Unauthorized as u32,
@@ -54,6 +67,8 @@ WrappedTokenError::MaxWrapExceeded = {}\n",
             WrappedTokenError::InsufficientBalance as u32,
             WrappedTokenError::InsufficientReserve as u32,
             WrappedTokenError::MaxWrapExceeded as u32,
+            WrappedTokenError::RateLimitExceeded as u32,
+            WrappedTokenError::AmountTooLow as u32,
         )
     }
 

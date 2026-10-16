@@ -2,7 +2,7 @@
 // missing_docs for this module. The types and fields are still documented.
 #![allow(missing_docs)]
 
-use soroban_sdk::{Address, contracttype};
+use soroban_sdk::{Address, Symbol, contracttype};
 
 /// Instance-storage keys for the oracle contract.
 #[contracttype]
@@ -10,7 +10,7 @@ use soroban_sdk::{Address, contracttype};
 pub enum DataKey {
     /// The admin address authorized to push price updates.
     Admin,
-    /// The most recently published price.
+    /// The most recently published price (single-asset legacy feed).
     Price,
     /// The ledger sequence at which the price was last updated.
     UpdatedAt,
@@ -24,6 +24,10 @@ pub enum DataKey {
     Submission(Address),
     /// Ring buffer of the last `N` price observations, oldest first (instance).
     History,
+    /// Per-asset price stored in persistent storage, keyed by asset symbol.
+    AssetPrice(Symbol),
+    /// Per-asset decimal precision stored in persistent storage, keyed by asset symbol.
+    AssetDecimals(Symbol),
 }
 
 /// Snapshot of the oracle state returned by read entry points.
@@ -58,4 +62,18 @@ pub struct PriceObservation {
     pub price: i128,
     /// The unix timestamp at which the price was recorded.
     pub timestamp: u64,
+}
+
+/// Per-asset price feed data returned by `get_asset_feed`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetFeedData {
+    /// The asset symbol (e.g. `XLM`, `BTC`).
+    pub asset: Symbol,
+    /// The latest price for this asset.
+    pub price: i128,
+    /// Decimal precision of the price (e.g. 7 for XLM/USD at 7 decimals).
+    pub decimals: u32,
+    /// Ledger sequence at which this price was recorded.
+    pub updated_at: u32,
 }

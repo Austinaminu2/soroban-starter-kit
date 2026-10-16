@@ -9,7 +9,7 @@
 extern crate std;
 
 use soroban_sdk::{
-    Address, BytesN, Env, String, contract, contractimpl, token, token::TokenInterface,
+    Address, BytesN, Env, MuxedAddress, String, contract, contractimpl, token, token::TokenInterface,
 };
 
 mod admin;
@@ -50,8 +50,21 @@ pub(crate) fn require_not_paused(env: &Env) -> Result<(), TokenError> {
 pub(crate) fn require_not_frozen(env: &Env, account: &Address) -> Result<(), TokenError> {
     if env
         .storage()
-        .instance()
+        .persistent()
         .get(&DataKey::Frozen(account.clone()))
+        .unwrap_or(false)
+    {
+        return Err(TokenError::Unauthorized);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "freeze")]
+pub(crate) fn require_not_blacklisted(env: &Env, account: &Address) -> Result<(), TokenError> {
+    if env
+        .storage()
+        .persistent()
+        .get(&DataKey::Blacklisted(account.clone()))
         .unwrap_or(false)
     {
         return Err(TokenError::Unauthorized);
@@ -230,6 +243,30 @@ mod contract {
             Ok(())
         }
 
+        /// Batch transfer: execute multiple transfers atomically with a single
+        /// sender balance deduction. More gas-efficient than repeated `transfer`.
+        pub fn transfer_batch(
+            env: Env,
+            from: Address,
+            transfers: soroban_sdk::Vec<(Address, i128)>,
+        ) -> Result<(), TokenError> {
+            Self::transfer_batch_impl(&env, from, transfers)
+        }
+
+        /// Transfer tokens from `from` to many recipients in a single transaction.
+        ///
+        /// Performs a single authorization check for `from`, deducts the total
+        /// amount from the sender once, and credits each recipient individually,
+        /// emitting one transfer event per recipient. More gas-efficient than
+        /// repeated `transfer` calls for payroll, rewards, or DAO distributions.
+        pub fn transfer_to_many(
+            env: Env,
+            from: Address,
+            recipients: soroban_sdk::Vec<(Address, i128)>,
+        ) -> Result<(), TokenError> {
+            Self::transfer_to_many_impl(&env, from, recipients)
+        }
+
         /// Burn `amount` tokens from `from`. Admin only.
         pub fn admin_burn(env: Env, from: Address, amount: i128) -> Result<(), TokenError> {
             #[cfg(feature = "pausable")]
@@ -392,6 +429,23 @@ mod contract {
             permit::permit_nonce(env, owner)
         }
 
+        /// Cancel `nonce` for `owner`, permanently invalidating any permit
+        /// signature signed for it. Owner-authenticated.
+        ///
+        /// Use this to revoke an unused off-chain permit (for example one given
+        /// to an untrusted relayer) without executing a dummy permit. Any
+        /// subsequent [`Self::approve_with_signature`] call using a cancelled
+        /// nonce fails with [`TokenError::InvalidNonce`].
+        pub fn cancel_permit_nonce(env: Env, owner: Address, nonce: u32) {
+            permit::cancel_permit_nonce(env, owner, nonce)
+        }
+
+        /// Return `true` if `owner` has cancelled `nonce`.
+        #[must_use]
+        pub fn is_permit_nonce_cancelled(env: Env, owner: Address, nonce: u32) -> bool {
+            permit::is_permit_nonce_cancelled(env, owner, nonce)
+        }
+
         /// Grant `spender` an allowance over `owner`'s tokens using a pre-signed,
         /// owner-authorized message instead of the owner submitting the transaction
         /// themselves. Analogous to ERC-2612 `permit`.
@@ -448,6 +502,18 @@ mod contract {
             events::unpaused(&env, &admin);
             Ok(())
         }
+
+        /// Return `true` when the contract is paused, `false` otherwise.
+        ///
+        /// This is a read-only query — no admin authentication required.
+        /// Use this instead of probing `pause`/`unpause` from monitoring scripts.
+        #[must_use]
+        pub fn is_paused(env: Env) -> bool {
+            env.storage()
+                .instance()
+                .get(&DataKey::Paused)
+                .unwrap_or(false)
+        }
     }
 
     /// Account freeze — only compiled when the `freeze` feature is enabled.
@@ -458,9 +524,14 @@ mod contract {
             let admin = require_admin(&env)?;
             admin.require_auth();
             env.storage()
-                .instance()
+                .persistent()
                 .set(&DataKey::Frozen(account.clone()), &true);
-            extend_ttl_instance(&env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            extend_ttl_persistent(
+                &env,
+                &DataKey::Frozen(account.clone()),
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
             events::account_frozen(&env, &account);
             Ok(())
         }
@@ -469,10 +540,82 @@ mod contract {
             let admin = require_admin(&env)?;
             admin.require_auth();
             env.storage()
-                .instance()
-                .set(&DataKey::Frozen(account.clone()), &false);
-            extend_ttl_instance(&env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+                .persistent()
+                .remove(&DataKey::Frozen(account.clone()));
             events::account_unfrozen(&env, &account);
+            Ok(())
+        }
+
+        /// Permanently blacklist `account` (distinct from a temporary freeze).
+        pub fn blacklist(env: Env, account: Address) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Blacklisted(account.clone()), &true);
+            extend_ttl_persistent(
+                &env,
+                &DataKey::Blacklisted(account.clone()),
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+            events::account_blacklisted(&env, &account);
+            Ok(())
+        }
+
+        /// Remove `account` from the permanent blacklist.
+        pub fn unblacklist(env: Env, account: Address) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Blacklisted(account.clone()));
+            events::account_unblacklisted(&env, &account);
+            Ok(())
+        }
+
+        /// Returns whether `account` is permanently blacklisted.
+        pub fn is_blacklisted(env: Env, account: Address) -> bool {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Blacklisted(account))
+                .unwrap_or(false)
+        }
+
+        /// Set the compliance treasury that receives confiscated blacklisted funds.
+        pub fn set_compliance_treasury(env: Env, treasury: Address) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            env.storage()
+                .instance()
+                .set(&DataKey::ComplianceTreasury, &treasury);
+            extend_ttl_instance(&env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            Ok(())
+        }
+
+        /// Confiscate `amount` from a blacklisted account to the compliance treasury.
+        pub fn confiscate_blacklisted(
+            env: Env,
+            account: Address,
+            amount: i128,
+        ) -> Result<(), TokenError> {
+            let admin = require_admin(&env)?;
+            admin.require_auth();
+            if amount <= 0 {
+                return Err(TokenError::InvalidAmount);
+            }
+            if !Self::is_blacklisted(env.clone(), account.clone()) {
+                return Err(TokenError::Unauthorized);
+            }
+            let treasury: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::ComplianceTreasury)
+                .ok_or(TokenError::NotInitialized)?;
+            Self::update_balance(&env, &account, -amount)?;
+            Self::update_balance(&env, &treasury, amount)?;
+            extend_ttl_instance(&env, LEDGER_LIFETIME_THRESHOLD, LEDGER_BUMP_AMOUNT);
+            events::compliance_confiscated(&env, &account, &treasury, amount);
             Ok(())
         }
     }
@@ -646,6 +789,240 @@ mod contract {
 
             Ok(())
         }
+
+        /// Multi-recipient transfer with a single sender authorization check and
+        /// a single sender balance deduction.
+        pub(crate) fn transfer_to_many_impl(
+            env: &Env,
+            from: Address,
+            recipients: soroban_sdk::Vec<(Address, i128)>,
+        ) -> Result<(), TokenError> {
+            from.require_auth();
+            #[cfg(feature = "pausable")]
+            require_not_paused(env)?;
+            #[cfg(feature = "freeze")]
+            require_not_frozen(env, &from)?;
+            #[cfg(feature = "freeze")]
+            require_not_blacklisted(env, &from)?;
+
+            if recipients.is_empty() {
+                return Err(TokenError::InvalidAmount);
+            }
+
+            // Sum recipient amounts with checked arithmetic.
+            let mut total_amount: i128 = 0;
+            for (_, amount) in recipients.iter() {
+                if amount <= 0 {
+                    return Err(TokenError::InvalidAmount);
+                }
+                total_amount = total_amount
+                    .checked_add(amount)
+                    .ok_or(TokenError::Overflow)?;
+            }
+
+            // Verify sender has sufficient balance.
+            let sender_balance: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Balance(from.clone()))
+                .unwrap_or(0);
+            if sender_balance < total_amount {
+                return Err(TokenError::InsufficientBalance);
+            }
+
+            // Deduct total amount from sender once.
+            let new_sender_balance = sender_balance
+                .checked_sub(total_amount)
+                .ok_or(TokenError::Overflow)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(from.clone()), &new_sender_balance);
+            extend_ttl_persistent(
+                env,
+                &DataKey::Balance(from.clone()),
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+
+            // Credit each recipient and emit an individual transfer event.
+            for (to, amount) in recipients.iter() {
+                if from == to {
+                    continue; // Self-transfer is a no-op for that recipient
+                }
+                let balance: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Balance(to.clone()))
+                    .unwrap_or(0);
+                let new_balance = balance.checked_add(amount).ok_or(TokenError::Overflow)?;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Balance(to.clone()), &new_balance);
+                extend_ttl_persistent(
+                    env,
+                    &DataKey::Balance(to.clone()),
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+                events::transferred(env, &from, &to, amount);
+            }
+
+            // Transfer hook: fire-and-forget for each transfer.
+            #[cfg(feature = "transfer-hook")]
+            {
+                if let Some(hook_addr) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Address>(&DataKey::TransferHook)
+                {
+                    for (to, amount) in recipients.iter() {
+                        if from == to {
+                            continue;
+                        }
+                        let args = soroban_sdk::vec![
+                            env,
+                            soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(
+                                &from, env
+                            ),
+                            soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(
+                                &to, env
+                            ),
+                            soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(
+                                &amount, env
+                            ),
+                        ];
+                        let _ = env.try_invoke_contract::<soroban_sdk::Val, soroban_sdk::Error>(
+                            &hook_addr,
+                            &soroban_sdk::Symbol::new(env, "on_transfer"),
+                            args,
+                        );
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        /// Batch transfer: execute multiple transfers atomically with a single
+        /// sender balance deduction. More gas-efficient than repeated `transfer`.
+        pub(crate) fn transfer_batch_impl(
+            env: &Env,
+            from: Address,
+            transfers: soroban_sdk::Vec<(Address, i128)>,
+        ) -> Result<(), TokenError> {
+            from.require_auth();
+            #[cfg(feature = "pausable")]
+            if let Err(e) = require_not_paused(env) {
+                return Err(e);
+            }
+            #[cfg(feature = "freeze")]
+            if let Err(e) = require_not_frozen(env, &from) {
+                return Err(e);
+            }
+            #[cfg(feature = "freeze")]
+            if let Err(e) = require_not_blacklisted(env, &from) {
+                return Err(e);
+            }
+
+            if transfers.is_empty() {
+                return Err(TokenError::InvalidAmount);
+            }
+
+            // Calculate total amount and validate all amounts are positive
+            let mut total_amount: i128 = 0;
+            for (_, amount) in transfers.iter() {
+                if amount <= 0 {
+                    return Err(TokenError::InvalidAmount);
+                }
+                total_amount = total_amount
+                    .checked_add(amount)
+                    .ok_or(TokenError::Overflow)?;
+            }
+
+            // Verify sender has sufficient balance
+            let sender_balance: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Balance(from.clone()))
+                .unwrap_or(0);
+            if sender_balance < total_amount {
+                return Err(TokenError::InsufficientBalance);
+            }
+
+            // Deduct total amount from sender once
+            let new_sender_balance = sender_balance
+                .checked_sub(total_amount)
+                .ok_or(TokenError::Overflow)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Balance(from.clone()), &new_sender_balance);
+            extend_ttl_persistent(
+                &env,
+                &DataKey::Balance(from.clone()),
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+
+            // Credit each recipient individually
+            for (to, amount) in transfers.iter() {
+                if from == to {
+                    continue; // Self-transfer is a no-op for that recipient
+                }
+                let balance: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Balance(to.clone()))
+                    .unwrap_or(0);
+                let new_balance = balance.checked_add(amount).ok_or(TokenError::Overflow)?;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Balance(to.clone()), &new_balance);
+                extend_ttl_persistent(
+                    &env,
+                    &DataKey::Balance(to.clone()),
+                    LEDGER_LIFETIME_THRESHOLD,
+                    LEDGER_BUMP_AMOUNT,
+                );
+            }
+
+            // Emit batch transfer event
+            events::transferred_batch(&env, &from, &transfers);
+
+            // Transfer hook: fire-and-forget for each transfer
+            #[cfg(feature = "transfer-hook")]
+            {
+                if let Some(hook_addr) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Address>(&DataKey::TransferHook)
+                {
+                    for (to, amount) in transfers.iter() {
+                        if from == to {
+                            continue;
+                        }
+                        let args = soroban_sdk::vec![
+                            env,
+                            soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(
+                                &from, env
+                            ),
+                            soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(
+                                &to, env
+                            ),
+                            soroban_sdk::IntoVal::<soroban_sdk::Env, soroban_sdk::Val>::into_val(
+                                &amount, env
+                            ),
+                        ];
+                        let _ = env.try_invoke_contract::<soroban_sdk::Val, soroban_sdk::Error>(
+                            &hook_addr,
+                            &soroban_sdk::Symbol::new(env, "on_transfer"),
+                            args,
+                        );
+                    }
+                }
+            }
+
+            Ok(())
+        }
     }
 
     #[contractimpl]
@@ -665,7 +1042,7 @@ mod contract {
         fn balance(env: Env, id: Address) -> i128 {
             token_interface::balance(env, id)
         }
-        fn transfer(env: Env, from: Address, to: Address, amount: i128) {
+        fn transfer(env: Env, from: Address, to: MuxedAddress, amount: i128) {
             token_interface::transfer(env, from, to, amount)
         }
         fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
