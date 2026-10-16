@@ -10,6 +10,9 @@ use soroban_sdk::{Address, Env, Vec, contract, contractclient, contractimpl, tok
 /// Number of tranches stored in persistent storage.
 const TRANCHE_COUNT: u32 = 0;
 
+/// Number of tokens tracked by a multi-token timelock instance.
+const TOKEN_COUNT: u32 = 1;
+
 mod errors;
 mod events;
 mod storage;
@@ -110,6 +113,17 @@ mod contract {
             env.storage().instance().set(&Amount, &amount);
             env.storage().instance().set(&State, &TimelockState::Active);
 
+            // Map the legacy single-token configuration onto token-keyed storage
+            // so that multi-token deposit/release entry points work uniformly.
+            env.storage()
+                .instance()
+                .set(&LockedBalance(token.clone()), &amount);
+            env.storage()
+                .instance()
+                .set(&TokenReleaseLedger(token.clone()), &release_ledger);
+            env.storage().instance().set(&TokenCount, &1u32);
+            env.storage().instance().set(&TokenAt(0), &token);
+
             bump_instance(&env);
             events::initialized(&env, &admin, &beneficiary, release_ledger, amount);
 
@@ -169,6 +183,16 @@ mod contract {
                 .instance()
                 .set(&YieldRecipient, &yield_recipient);
             env.storage().instance().set(&Deposited, &false);
+
+            // Map the legacy single-token configuration onto token-keyed storage.
+            env.storage()
+                .instance()
+                .set(&LockedBalance(token.clone()), &amount);
+            env.storage()
+                .instance()
+                .set(&TokenReleaseLedger(token.clone()), &release_ledger);
+            env.storage().instance().set(&TokenCount, &1u32);
+            env.storage().instance().set(&TokenAt(0), &token);
 
             bump_instance(&env);
             events::initialized(&env, &admin, &beneficiary, release_ledger, amount);
@@ -357,6 +381,16 @@ mod contract {
             env.storage().instance().set(&ReleaseLedger, &first_tranche.release_ledger);
             env.storage().instance().set(&Amount, &total_amount);
 
+            // Map the legacy single-token configuration onto token-keyed storage.
+            env.storage()
+                .instance()
+                .set(&LockedBalance(token.clone()), &total_amount);
+            env.storage()
+                .instance()
+                .set(&TokenReleaseLedger(token.clone()), &first_tranche.release_ledger);
+            env.storage().instance().set(&TokenCount, &1u32);
+            env.storage().instance().set(&TokenAt(0), &token);
+
             env.storage().instance().set(&State, &TimelockState::Active);
 
             bump_instance(&env);
@@ -365,15 +399,24 @@ mod contract {
             Ok(())
         }
 
-        /// Release locked tokens to the beneficiary. Callable by anyone after `release_ledger`.
+        /// Deposit `amount` of `token` into the timelock, unlocking at `release_ledger`.
+        ///
+        /// Multiple distinct tokens may be locked in a single contract instance;
+        /// balances and schedules are keyed by token address.
         ///
         /// # Errors
         ///
         /// Returns [`TimelockError::NotInitialized`] if not yet set up.
-        /// Returns [`TimelockError::AlreadyReleased`] if tokens were already released.
-        /// Returns [`TimelockError::AlreadyCancelled`] if the timelock was cancelled.
-        /// Returns [`TimelockError::NotYetReleasable`] if `release_ledger` has not been reached.
-        pub fn release(env: Env) -> Result<(), TimelockError> {
+        /// Returns [`TimelockError::AlreadyReleased`] / [`TimelockError::AlreadyCancelled`]
+        /// if the timelock is no longer active.
+        /// Returns [`TimelockError::InvalidAmount`] if `amount` <= 0.
+        /// Returns [`TimelockError::InvalidReleaseLedger`] if `release_ledger` <= current ledger.
+        pub fn deposit(
+            env: Env,
+            token: Address,
+            amount: i128,
+            release_ledger: u32,
+        ) -> Result<(), TimelockError> {
             let state: TimelockState = get_required(&env, &State)?;
             match state {
                 TimelockState::Released => return Err(TimelockError::AlreadyReleased),
@@ -381,7 +424,89 @@ mod contract {
                 TimelockState::Active => {}
             }
 
-            let token: Address = get_required(&env, &Token)?;
+            if amount <= 0 {
+                return Err(TimelockError::InvalidAmount);
+            }
+            if release_ledger <= env.ledger().sequence() {
+                return Err(TimelockError::InvalidReleaseLedger);
+            }
+
+            let admin: Address = get_required(&env, &Admin)?;
+            admin.require_auth();
+
+            token::Client::new(&env, &token).transfer(
+                &admin,
+                &env.current_contract_address(),
+                &amount,
+            );
+
+            // Accumulate the locked balance for this token.
+            let existing: i128 = env
+                .storage()
+                .instance()
+                .get(&LockedBalance(token.clone()))
+                .unwrap_or(0);
+            let new_balance = existing
+                .checked_add(amount)
+                .ok_or(TimelockError::InvalidAmount)?;
+            env.storage()
+                .instance()
+                .set(&LockedBalance(token.clone()), &new_balance);
+
+            // Track the token in the instance's token registry if it is new.
+            let count: u32 = env.storage().instance().get(&TokenCount).unwrap_or(0);
+            let mut known = false;
+            for i in 0..count {
+                if let Some(existing_token) = env
+                    .storage()
+                    .instance()
+                    .get::<_, Address>(&TokenAt(i))
+                {
+                    if existing_token == token {
+                        known = true;
+                        break;
+                    }
+                }
+            }
+            if !known {
+                env.storage().instance().set(&TokenAt(count), &token);
+                env.storage().instance().set(&TokenCount, &(count + 1));
+            }
+
+            // Record the schedule for this token, keeping the earliest ledger.
+            let prev_ledger: u32 = env
+                .storage()
+                .instance()
+                .get(&TokenReleaseLedger(token.clone()))
+                .unwrap_or(u32::MAX);
+            if release_ledger < prev_ledger {
+                env.storage()
+                    .instance()
+                    .set(&TokenReleaseLedger(token.clone()), &release_ledger);
+            }
+
+            bump_instance(&env);
+            events::deposited_token(&env, &token, amount, release_ledger);
+
+            Ok(())
+        }
+
+        /// Release all matured locked tokens of `token` to the beneficiary.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TimelockError::NotInitialized`] if not yet set up.
+        /// Returns [`TimelockError::AlreadyReleased`] if tokens were already released.
+        /// Returns [`TimelockError::AlreadyCancelled`] if the timelock was cancelled.
+        /// Returns [`TimelockError::NotYetReleasable`] if no balance has matured yet.
+        pub fn release(env: Env, token: Address) -> Result<(), TimelockError> {
+            let state: TimelockState = get_required(&env, &State)?;
+            match state {
+                TimelockState::Released => return Err(TimelockError::AlreadyReleased),
+                TimelockState::Cancelled => return Err(TimelockError::AlreadyCancelled),
+                TimelockState::Active => {}
+            }
+
             let beneficiary: Address = get_required(&env, &Beneficiary)?;
 
             // If tokens were deposited into staking, withdraw them first so the
@@ -529,6 +654,135 @@ mod contract {
             }
 
             Ok(())
+        }
+
+        /// Release a specific `amount` of the currently matured balance of `token`.
+        ///
+        /// Unlike [`Self::release`], this leaves any remaining matured balance
+        /// available for subsequent partial claims.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TimelockError::NotInitialized`] if not yet set up.
+        /// Returns [`TimelockError::AlreadyReleased`] / [`TimelockError::AlreadyCancelled`]
+        /// if the timelock is no longer active.
+        /// Returns [`TimelockError::InvalidAmount`] if `amount` <= 0.
+        /// Returns [`TimelockError::NotYetReleasable`] if `amount` exceeds the matured balance.
+        pub fn release_partial(
+            env: Env,
+            token: Address,
+            amount: i128,
+        ) -> Result<(), TimelockError> {
+            let state: TimelockState = get_required(&env, &State)?;
+            match state {
+                TimelockState::Released => return Err(TimelockError::AlreadyReleased),
+                TimelockState::Cancelled => return Err(TimelockError::AlreadyCancelled),
+                TimelockState::Active => {}
+            }
+
+            if amount <= 0 {
+                return Err(TimelockError::InvalidAmount);
+            }
+
+            let beneficiary: Address = get_required(&env, &Beneficiary)?;
+
+            // Compute the currently matured claimable balance for this token.
+            let claimable = Self::claimable_amount_internal(&env, &token)?;
+            if amount > claimable {
+                return Err(TimelockError::NotYetReleasable);
+            }
+
+            // Deduct the requested amount from the locked balance.
+            let locked: i128 = env
+                .storage()
+                .instance()
+                .get(&LockedBalance(token.clone()))
+                .unwrap_or(0);
+            let remaining = locked.saturating_sub(amount);
+            env.storage()
+                .instance()
+                .set(&LockedBalance(token.clone()), &remaining);
+
+            bump_instance(&env);
+
+            token::Client::new(&env, &token).transfer(
+                &env.current_contract_address(),
+                &beneficiary,
+                &amount,
+            );
+
+            events::partial_released(&env, &token, &beneficiary, amount);
+
+            Ok(())
+        }
+
+        /// Return the currently matured claimable balance for `token`.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TimelockError::NotInitialized`] if not yet set up.
+        pub fn claimable_amount(env: Env, token: Address) -> Result<i128, TimelockError> {
+            Self::claimable_amount_internal(&env, &token)
+        }
+
+        /// Internal helper computing the matured claimable balance for `token`.
+        fn claimable_amount_internal(
+            env: &Env,
+            token: &Address,
+        ) -> Result<i128, TimelockError> {
+            let current_ledger = env.ledger().sequence();
+
+            // Multi-tranche timelocks track per-tranche maturity.
+            if let Some(count) = env.storage().instance().get::<_, u32>(&TRANCHE_COUNT) {
+                let mut claimable: i128 = 0;
+                for i in 0..count {
+                    let tranche_key = DataKey::Tranche(i);
+                    let tranche: ReleaseTranche = env
+                        .storage()
+                        .persistent()
+                        .get(&tranche_key)
+                        .ok_or(TimelockError::NotInitialized)?;
+                    env.storage().persistent().extend_ttl(
+                        &tranche_key,
+                        LEDGER_LIFETIME_THRESHOLD,
+                        LEDGER_BUMP_AMOUNT,
+                    );
+
+                    let released_key = DataKey::TrancheReleased(i);
+                    let is_released: bool = env
+                        .storage()
+                        .persistent()
+                        .get(&released_key)
+                        .unwrap_or(false);
+                    env.storage().persistent().extend_ttl(
+                        &released_key,
+                        LEDGER_LIFETIME_THRESHOLD,
+                        LEDGER_BUMP_AMOUNT,
+                    );
+
+                    if !is_released && current_ledger >= tranche.release_ledger {
+                        claimable = claimable.saturating_add(tranche.amount);
+                    }
+                }
+                return Ok(claimable);
+            }
+
+            // Legacy single-tranche timelock.
+            let release_ledger: u32 = env
+                .storage()
+                .instance()
+                .get(&TokenReleaseLedger(token.clone()))
+                .or_else(|| env.storage().instance().get(&ReleaseLedger))
+                .unwrap_or(0);
+            if current_ledger < release_ledger {
+                return Ok(0);
+            }
+
+            Ok(env
+                .storage()
+                .instance()
+                .get(&LockedBalance(token.clone()))
+                .unwrap_or(0))
         }
 
         /// Cancel the timelock and return tokens to admin. Admin only; works while in `Active` state.
@@ -732,6 +986,15 @@ mod contract {
         pub fn get_remaining_ledgers(env: Env) -> i64 {
             let release_ledger: u32 = env.storage().instance().get(&ReleaseLedger).unwrap_or(0);
             release_ledger as i64 - env.ledger().sequence() as i64
+        }
+
+        /// Return the locked balance currently held for `token`.
+        #[must_use]
+        pub fn locked_balance(env: Env, token: Address) -> i128 {
+            env.storage()
+                .instance()
+                .get(&LockedBalance(token))
+                .unwrap_or(0)
         }
     }
 }

@@ -88,6 +88,20 @@ pub fn transferred_batch(env: &Env, from: &Address, transfers: &soroban_sdk::Vec
     );
 }
 
+/// Emitted for each individual recipient credit performed by
+/// `transfer_to_many`.
+/// Topics: (Symbol, Address, Address) — event name, from, to
+/// Data: amount
+///
+/// This mirrors the standard `transferred` event shape so that indexers can
+/// process multi-recipient payouts without special-casing them.
+pub fn transferred_many(env: &Env, from: &Address, to: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "transfer"), from.clone(), to.clone()),
+        amount,
+    );
+}
+
 /// Emitted when an account is frozen.
 /// Topics: (Symbol, Address) — event name, account
 pub fn account_frozen(env: &Env, account: &Address) {

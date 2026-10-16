@@ -19,7 +19,8 @@ pub enum TimelockError {
     AlreadyDeposited = 10,
     NotDeposited = 11,
     StakingCallFailed = 12,
-    TrancheAlreadyReleased = 9,
+    TrancheAlreadyReleased = 13,
+    AmountExceedsClaimable = 14,
 }
 
 impl_display_error!(
@@ -37,6 +38,7 @@ impl_display_error!(
     NotDeposited        => "not deposited",
     StakingCallFailed   => "staking call failed",
     TrancheAlreadyReleased => "tranche already released",
+    AmountExceedsClaimable => "amount exceeds claimable",
 );
 
 #[cfg(test)]
@@ -62,8 +64,9 @@ TimelockError::InvalidReleaseLedger = {}\n\
 TimelockError::StakingNotConfigured = {}\n\
 TimelockError::AlreadyDeposited = {}\n\
 TimelockError::NotDeposited = {}\n\
-TimelockError::StakingCallFailed = {}\n",
-TimelockError::TrancheAlreadyReleased = {}\n",
+TimelockError::StakingCallFailed = {}\n\
+TimelockError::TrancheAlreadyReleased = {}\n\
+TimelockError::AmountExceedsClaimable = {}\n",
             TimelockError::NotAuthorized as u32,
             TimelockError::AlreadyInitialized as u32,
             TimelockError::NotInitialized as u32,
@@ -77,6 +80,7 @@ TimelockError::TrancheAlreadyReleased = {}\n",
             TimelockError::NotDeposited as u32,
             TimelockError::StakingCallFailed as u32,
             TimelockError::TrancheAlreadyReleased as u32,
+            TimelockError::AmountExceedsClaimable as u32,
         )
     }
 
