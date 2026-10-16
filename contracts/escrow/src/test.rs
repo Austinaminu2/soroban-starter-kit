@@ -10,7 +10,7 @@
 use super::*;
 use soroban_sdk::token::TokenInterface;
 use soroban_sdk::{
-    Address, Env, FromVal, IntoVal, String, Symbol,
+    Address, Env, FromVal, IntoVal, String, Symbol, Vec,
     testutils::{Address as _, Events as _, Ledger as _},
 };
 
@@ -1319,9 +1319,10 @@ fn test_request_refund_after_partial_release_past_deadline() {
     client.request_refund();
 
     assert_eq!(client.get_state(), Some(EscrowState::Refunded));
-    // Remaining amount (750) should have been refunded
+    // Remaining amount (750) was refunded; stored balance is cleared after payout.
+    assert_eq!(amount - amount / 4, 750);
     let info = client.get_escrow_info();
-    assert_eq!(info.amount, amount - amount / 4);
+    assert_eq!(info.amount, 0);
 }
 
 // ── Admin-configurable fee tests ───────────────────────────────────────────────
@@ -1474,4 +1475,130 @@ fn test_release_partial_deducts_configured_fee() {
     // escrowed amount, so the fee is paid out of the release, not on top of it.
     let info = client.get_escrow_info();
     assert_eq!(info.amount, 800);
+}
+
+// ── Milestone dispute remainder (issue #1189) ───────────────────────────────────
+
+fn setup_funded_milestone_escrow<'a>(
+    env: &'a Env,
+) -> (
+    EscrowContractClient<'a>,
+    Address,
+    Address,
+    Address,
+    Address,
+    i128,
+    i128,
+) {
+    let admin = Address::generate(env);
+    let buyer = Address::generate(env);
+    let seller = Address::generate(env);
+    let arbiter = Address::generate(env);
+    let token = create_mock_token(env);
+    let deadline = env.ledger().sequence() + 100;
+    let m1 = 400i128;
+    let m2 = 600i128;
+
+    let mut milestones = Vec::new(env);
+    milestones.push_back(Milestone {
+        description: String::from_str(env, "phase-1"),
+        amount: m1,
+        released: false,
+    });
+    milestones.push_back(Milestone {
+        description: String::from_str(env, "phase-2"),
+        amount: m2,
+        released: false,
+    });
+
+    let (client, _) = create_escrow_contract(env);
+    client.initialize_with_milestones(
+        &admin,
+        &buyer,
+        &seller,
+        &arbiter,
+        &token,
+        &milestones,
+        &deadline,
+        &0,
+        &None,
+    );
+    client.fund();
+    (client, buyer, seller, arbiter, token, m1, m2)
+}
+
+#[test]
+fn test_resolve_dispute_to_seller_after_partial_milestone_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, buyer, _seller, arbiter, _token, _m1, m2) = setup_funded_milestone_escrow(&env);
+
+    // Release milestone 0; only m2 remains disputable.
+    client.release_milestone(&buyer, &0u32);
+    assert_eq!(client.get_escrow_info().amount, m2);
+
+    client.raise_dispute(&buyer);
+    client.resolve_dispute(&arbiter, &true);
+
+    assert_eq!(client.get_state(), Some(EscrowState::Completed));
+    // Stored amount cleared after paying only the unreleased remainder.
+    assert_eq!(client.get_escrow_info().amount, 0);
+
+    let milestones = client.get_milestones();
+    assert!(milestones.get(0).unwrap().released);
+    assert!(milestones.get(1).unwrap().released);
+}
+
+#[test]
+fn test_resolve_dispute_to_buyer_after_partial_milestone_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, buyer, _seller, arbiter, _token, _m1, m2) = setup_funded_milestone_escrow(&env);
+
+    client.release_milestone(&buyer, &0u32);
+    assert_eq!(client.get_escrow_info().amount, m2);
+
+    client.raise_dispute(&buyer);
+    client.resolve_dispute(&arbiter, &false);
+
+    assert_eq!(client.get_state(), Some(EscrowState::Refunded));
+    // Refund settles only the unreleased remainder — never re-disburse m1.
+    assert_eq!(client.get_escrow_info().amount, 0);
+    let milestones = client.get_milestones();
+    assert!(milestones.get(0).unwrap().released);
+    assert!(milestones.get(1).unwrap().released);
+}
+
+#[test]
+fn test_dispute_resolution_ignores_stale_total_amount_for_milestones() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, buyer, _seller, arbiter, _token, m1, m2) = setup_funded_milestone_escrow(&env);
+    let contract_id = client.address.clone();
+    client.release_milestone(&buyer, &0u32);
+
+    // Simulate a stale Amount still holding the original total (m1+m2).
+    // Dispute resolution must still use only unreleased milestone funds.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::Amount, &(m1 + m2));
+    });
+    assert_eq!(client.get_escrow_info().amount, m1 + m2);
+
+    // Before resolve, unreleased remainder is m2 even though Amount is stale.
+    let milestones_before = client.get_milestones();
+    assert!(milestones_before.get(0).unwrap().released);
+    assert!(!milestones_before.get(1).unwrap().released);
+    assert_eq!(milestones_before.get(1).unwrap().amount, m2);
+
+    client.raise_dispute(&buyer);
+    client.resolve_dispute(&arbiter, &false);
+
+    assert_eq!(client.get_state(), Some(EscrowState::Refunded));
+    // Amount synced down from stale total and cleared after refunding m2 only.
+    assert_eq!(client.get_escrow_info().amount, 0);
 }
