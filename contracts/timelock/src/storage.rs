@@ -28,10 +28,11 @@ pub enum DataKey {
     Amount,
     /// Timelock state.
     State,
-    /// List of release tranches for multi-tranche releases.
-    Tranches,
-    /// Bitmask tracking which tranches have been released (index -> true/false).
-    ReleasedTranches,
+    /// Individual release tranche stored in persistent storage (index -> tranche).
+    Tranche(u32),
+    /// Release flag for an individual tranche stored in persistent storage
+    /// (index -> true/false).
+    TrancheReleased(u32),
 }
 
 #[contracttype]

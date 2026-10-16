@@ -397,3 +397,161 @@ fn test_multi_tranche_is_releasable() {
     env.ledger().with_mut(|l| l.sequence_number = ledger2);
     assert!(client.is_releasable());
 }
+
+// ── Persistent-storage multi-tranche tests ───────────────────────────────
+
+/// Builds a client with `n` tranches of `amount_each`, spaced `spacing`
+/// ledgers apart starting at `first_ledger`.
+fn setup_multi_tranche(
+    env: &Env,
+    n: u32,
+    amount_each: i128,
+    first_ledger: u32,
+    spacing: u32,
+) -> (TimelockContractClient, Address, Address, Address, SdkVec<ReleaseTranche>) {
+    let admin = Address::generate(env);
+    let beneficiary = Address::generate(env);
+    let token = env.register_contract(None, MockToken);
+
+    let addr = env.register_contract(None, TimelockContract);
+    let client = TimelockContractClient::new(env, &addr);
+
+    let mut tranches = SdkVec::new(env);
+    for i in 0..n {
+        tranches.push_back(ReleaseTranche {
+            release_ledger: first_ledger + i * spacing,
+            amount: amount_each,
+        });
+    }
+
+    client.initialize_with_tranches(&admin, &token, &beneficiary, &tranches);
+
+    (client, admin, beneficiary, token, tranches)
+}
+
+#[test]
+fn test_persistent_tranches_read_back_via_get_info() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let first_ledger = env.ledger().sequence() + 10;
+    let (client, _, _, _, tranches) = setup_multi_tranche(&env, 48, 100, first_ledger, 30);
+
+    let info = client.get_info();
+    assert_eq!(info.tranches.len(), 48);
+    assert_eq!(info.amount, 48 * 100);
+    assert_eq!(info.release_ledger, first_ledger + 47 * 30);
+    assert_eq!(info.state, TimelockState::Active);
+
+    // Every tranche must round-trip through persistent storage unchanged.
+    for i in 0..48u32 {
+        let expected = tranches.get(i).unwrap();
+        let actual = info.tranches.get(i).unwrap();
+        assert_eq!(actual.release_ledger, expected.release_ledger);
+        assert_eq!(actual.amount, expected.amount);
+    }
+}
+
+#[test]
+fn test_persistent_tranche_partial_then_full_release() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let first_ledger = env.ledger().sequence() + 10;
+    let (client, _, _, _, tranches) = setup_multi_tranche(&env, 3, 250, first_ledger, 20);
+
+    // Before any ledger: nothing releasable, still active.
+    assert!(!client.is_releasable());
+    assert_eq!(client.get_info().state, TimelockState::Active);
+
+    // Release tranche 0.
+    let l0 = tranches.get(0).unwrap().release_ledger;
+    env.ledger().with_mut(|l| l.sequence_number = l0);
+    assert!(client.is_releasable());
+    client.release();
+    assert_eq!(client.get_info().state, TimelockState::Active);
+
+    // Release tranche 1.
+    let l1 = tranches.get(1).unwrap().release_ledger;
+    env.ledger().with_mut(|l| l.sequence_number = l1);
+    assert!(client.is_releasable());
+    client.release();
+    assert_eq!(client.get_info().state, TimelockState::Active);
+
+    // Release tranche 2 — now fully released.
+    let l2 = tranches.get(2).unwrap().release_ledger;
+    env.ledger().with_mut(|l| l.sequence_number = l2);
+    assert!(client.is_releasable());
+    client.release();
+    assert_eq!(client.get_info().state, TimelockState::Released);
+
+    // Once fully released, no further tranche is releasable.
+    assert!(!client.is_releasable());
+}
+
+#[test]
+fn test_persistent_tranche_is_releasable_per_tranche() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let first_ledger = env.ledger().sequence() + 10;
+    let (client, _, _, _, tranches) = setup_multi_tranche(&env, 4, 100, first_ledger, 25);
+
+    // Before the first tranche ledger, nothing is releasable.
+    assert!(!client.is_releasable());
+
+    // At each tranche ledger, is_releasable must be true until all are released.
+    for i in 0..4u32 {
+        let ledger = tranches.get(i).unwrap().release_ledger;
+        env.ledger().with_mut(|l| l.sequence_number = ledger);
+        assert!(client.is_releasable(), "tranche {i} should be releasable");
+        client.release();
+    }
+
+    // All tranches released: no longer releasable.
+    assert!(!client.is_releasable());
+    assert_eq!(client.get_info().state, TimelockState::Released);
+}
+
+#[test]
+fn test_persistent_tranche_lookup_extends_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let first_ledger = env.ledger().sequence() + 10;
+    let (client, _, _, _, tranches) = setup_multi_tranche(&env, 5, 200, first_ledger, 40);
+
+    // Advance the ledger well past the initial TTL window but before the
+    // final tranche's release ledger, then read the tranches back. The
+    // lookup must extend the TTL so entries remain accessible.
+    let mid_ledger = first_ledger + 2 * 40;
+    env.ledger().with_mut(|l| l.sequence_number = mid_ledger);
+
+    let info = client.get_info();
+    assert_eq!(info.tranches.len(), 5);
+    for i in 0..5u32 {
+        let expected = tranches.get(i).unwrap();
+        let actual = info.tranches.get(i).unwrap();
+        assert_eq!(actual.release_ledger, expected.release_ledger);
+        assert_eq!(actual.amount, expected.amount);
+    }
+
+    // Advance further and confirm entries are still accessible after the
+    // TTL extension performed by the previous lookup.
+    let later_ledger = first_ledger + 4 * 40;
+    env.ledger().with_mut(|l| l.sequence_number = later_ledger);
+
+    let info2 = client.get_info();
+    assert_eq!(info2.tranches.len(), 5);
+    for i in 0..5u32 {
+        let expected = tranches.get(i).unwrap();
+        let actual = info2.tranches.get(i).unwrap();
+        assert_eq!(actual.release_ledger, expected.release_ledger);
+        assert_eq!(actual.amount, expected.amount);
+    }
+
+    // Release the final tranche and confirm the release status persisted.
+    env.ledger().with_mut(|l| l.sequence_number = later_ledger);
+    client.release();
+    assert_eq!(client.get_info().state, TimelockState::Released);
+}
