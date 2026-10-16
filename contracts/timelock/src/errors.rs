@@ -24,6 +24,7 @@ pub enum TimelockError {
     NoPendingBeneficiary = 15,
     EarlyReleaseNotConfigured = 16,
     InvalidPenaltyBps = 17,
+    AmountExceedsClaimable = 14,
 }
 
 impl_display_error!(
@@ -45,6 +46,7 @@ impl_display_error!(
     NoPendingBeneficiary => "no pending beneficiary",
     EarlyReleaseNotConfigured => "early release not configured",
     InvalidPenaltyBps   => "invalid penalty bps",
+    AmountExceedsClaimable => "amount exceeds claimable",
 );
 
 #[cfg(test)]
@@ -76,6 +78,7 @@ TimelockError::BeneficiaryProposalNotFound = {}\n\
 TimelockError::NoPendingBeneficiary = {}\n\
 TimelockError::EarlyReleaseNotConfigured = {}\n\
 TimelockError::InvalidPenaltyBps = {}\n",
+TimelockError::AmountExceedsClaimable = {}\n",
             TimelockError::NotAuthorized as u32,
             TimelockError::AlreadyInitialized as u32,
             TimelockError::NotInitialized as u32,
@@ -93,6 +96,7 @@ TimelockError::InvalidPenaltyBps = {}\n",
             TimelockError::NoPendingBeneficiary as u32,
             TimelockError::EarlyReleaseNotConfigured as u32,
             TimelockError::InvalidPenaltyBps as u32,
+            TimelockError::AmountExceedsClaimable as u32,
         )
     }
 

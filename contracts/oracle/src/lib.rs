@@ -7,16 +7,17 @@
 //! threshold.
 
 #[cfg(test)]
+#[macro_use]
 extern crate std;
 
-use soroban_sdk::{Address, Env, Vec, contract, contractimpl};
+use soroban_sdk::{Address, Env, Symbol, Vec, contract, contractimpl};
 
 mod errors;
 mod events;
 mod storage;
 
 pub use errors::OracleError;
-pub use storage::{DataKey, PriceData, PriceObservation, PublisherSubmission};
+pub use storage::{AssetFeedData, DataKey, PriceData, PriceObservation, PublisherSubmission};
 
 use soroban_common::{LEDGER_BUMP_AMOUNT, LEDGER_LIFETIME_THRESHOLD};
 
@@ -170,9 +171,14 @@ mod contract {
         /// # Errors
         /// - [`OracleError::NotInitialized`] if not yet set up.
         /// - [`OracleError::Unauthorized`] if caller is not the admin.
+        /// - [`OracleError::InvalidPrice`] if `price` is zero or negative.
         pub fn update_price(env: Env, price: i128) -> Result<(), OracleError> {
             let admin: Address = get_required(&env, &Admin)?;
             admin.require_auth();
+
+            if price <= 0 {
+                return Err(OracleError::InvalidPrice);
+            }
 
             let ledger = env.ledger().sequence();
             let timestamp = env.ledger().timestamp();
@@ -372,6 +378,118 @@ mod contract {
 
             bump_instance(&env);
             Ok(twap(&in_window, now))
+        }
+
+        // -----------------------------------------------------------------------
+        // Multi-asset price feed (#1259)
+        // -----------------------------------------------------------------------
+
+        /// Push a price for a specific asset with decimal metadata. Admin only.
+        ///
+        /// Prices are stored in persistent storage keyed by `asset` symbol so multiple
+        /// independent feeds can coexist. `decimals` records the precision of the price
+        /// (e.g. `7` for an XLM/USD price expressed with 7 decimal places).
+        ///
+        /// # Errors
+        /// - [`OracleError::NotInitialized`] if not yet set up.
+        /// - [`OracleError::Unauthorized`] if caller is not the admin.
+        /// - [`OracleError::InvalidPrice`] if `price` is zero or negative.
+        pub fn update_asset_price(
+            env: Env,
+            asset: Symbol,
+            price: i128,
+            decimals: u32,
+        ) -> Result<(), OracleError> {
+            let admin: Address = get_required(&env, &Admin)?;
+            admin.require_auth();
+
+            if price <= 0 {
+                return Err(OracleError::InvalidPrice);
+            }
+
+            let ledger = env.ledger().sequence();
+            let price_key = AssetPrice(asset.clone());
+            let dec_key = AssetDecimals(asset.clone());
+
+            env.storage().persistent().set(&price_key, &(price, ledger));
+            env.storage().persistent().extend_ttl(
+                &price_key,
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+            env.storage().persistent().set(&dec_key, &decimals);
+            env.storage().persistent().extend_ttl(
+                &dec_key,
+                LEDGER_LIFETIME_THRESHOLD,
+                LEDGER_BUMP_AMOUNT,
+            );
+
+            bump_instance(&env);
+            events::asset_price_updated(&env, &admin, &asset, price, decimals, ledger);
+            Ok(())
+        }
+
+        /// Return the current price for `asset`, rejecting it if stale.
+        ///
+        /// Staleness is checked against the instance-level `staleness_threshold`
+        /// configured at `initialize` time.
+        ///
+        /// # Errors
+        /// - [`OracleError::NotInitialized`] if not yet set up.
+        /// - [`OracleError::AssetNotFound`] if no price has been pushed for `asset`.
+        /// - [`OracleError::StalePrice`] if the price is older than the threshold.
+        pub fn get_price_for(env: Env, asset: Symbol) -> Result<i128, OracleError> {
+            let threshold: u32 = get_required(&env, &StalenessThreshold)?;
+            let price_key = AssetPrice(asset);
+            let (price, updated_at): (i128, u32) = env
+                .storage()
+                .persistent()
+                .get(&price_key)
+                .ok_or(OracleError::AssetNotFound)?;
+
+            let age = env.ledger().sequence().saturating_sub(updated_at);
+            if age > threshold {
+                return Err(OracleError::StalePrice);
+            }
+
+            bump_instance(&env);
+            Ok(price)
+        }
+
+        /// Return the decimal precision for `asset`.
+        ///
+        /// # Errors
+        /// - [`OracleError::AssetNotFound`] if `update_asset_price` has never been
+        ///   called for `asset`.
+        pub fn get_decimals(env: Env, asset: Symbol) -> Result<u32, OracleError> {
+            env.storage()
+                .persistent()
+                .get(&AssetDecimals(asset))
+                .ok_or(OracleError::AssetNotFound)
+        }
+
+        /// Return a snapshot of the full price feed for `asset` (price, decimals, updated_at).
+        ///
+        /// # Errors
+        /// - [`OracleError::NotInitialized`] if not yet set up.
+        /// - [`OracleError::AssetNotFound`] if no price has been pushed for `asset`.
+        pub fn get_asset_feed(env: Env, asset: Symbol) -> Result<AssetFeedData, OracleError> {
+            let (price, updated_at): (i128, u32) = env
+                .storage()
+                .persistent()
+                .get(&AssetPrice(asset.clone()))
+                .ok_or(OracleError::AssetNotFound)?;
+            let decimals: u32 = env
+                .storage()
+                .persistent()
+                .get(&AssetDecimals(asset.clone()))
+                .ok_or(OracleError::AssetNotFound)?;
+            Ok(AssetFeedData {
+                asset,
+                price,
+                decimals,
+                updated_at,
+            })
         }
     }
 }

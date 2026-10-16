@@ -1,3 +1,6 @@
+// `#[contracterror]` generates an undocumented associated function; suppress
+// the lint for this module only.
+#![allow(missing_docs)]
 //! Checked fixed-point arithmetic helpers shared across the contracts workspace.
 //!
 //! This module provides a small, audited set of routines for performing

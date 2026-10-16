@@ -247,6 +247,415 @@ fn test_transfer_negative_amount() {
 }
 
 #[test]
+fn test_transfer_zero_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let other = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&user, &1000i128);
+
+    assert_eq!(
+        client.try_transfer(&user, &other, &0i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    // Balances untouched
+    assert_eq!(client.balance(&user), 1000i128);
+    assert_eq!(client.balance(&other), 0i128);
+}
+
+#[test]
+fn test_transfer_negative_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let other = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&user, &1000i128);
+
+    assert_eq!(
+        client.try_transfer(&user, &other, &-1i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.balance(&user), 1000i128);
+    assert_eq!(client.balance(&other), 0i128);
+}
+
+#[test]
+fn test_transfer_from_zero_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&owner, &1000i128);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&owner, &spender, &500i128, &expiration);
+
+    assert_eq!(
+        client.try_transfer_from(&spender, &owner, &recipient, &0i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    // Allowance and balances untouched
+    assert_eq!(client.allowance(&owner, &spender), 500i128);
+    assert_eq!(client.balance(&owner), 1000i128);
+    assert_eq!(client.balance(&recipient), 0i128);
+}
+
+#[test]
+fn test_transfer_from_negative_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&owner, &1000i128);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&owner, &spender, &500i128, &expiration);
+
+    assert_eq!(
+        client.try_transfer_from(&spender, &owner, &recipient, &-1i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.allowance(&owner, &spender), 500i128);
+    assert_eq!(client.balance(&owner), 1000i128);
+}
+
+#[test]
+fn test_burn_zero_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&user, &1000i128);
+
+    assert_eq!(
+        client.try_burn(&user, &0i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.balance(&user), 1000i128);
+    assert_eq!(client.total_supply(), 1000i128);
+}
+
+#[test]
+fn test_burn_negative_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&user, &1000i128);
+
+    assert_eq!(
+        client.try_burn(&user, &-1i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.balance(&user), 1000i128);
+    assert_eq!(client.total_supply(), 1000i128);
+}
+
+#[test]
+fn test_burn_from_zero_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&owner, &1000i128);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&owner, &spender, &400i128, &expiration);
+
+    assert_eq!(
+        client.try_burn_from(&spender, &owner, &0i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.allowance(&owner, &spender), 400i128);
+    assert_eq!(client.balance(&owner), 1000i128);
+    assert_eq!(client.total_supply(), 1000i128);
+}
+
+#[test]
+fn test_burn_from_negative_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&owner, &1000i128);
+    let expiration = env.ledger().sequence() + 100;
+    client.approve(&owner, &spender, &400i128, &expiration);
+
+    assert_eq!(
+        client.try_burn_from(&spender, &owner, &-1i128),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.allowance(&owner, &spender), 400i128);
+    assert_eq!(client.balance(&owner), 1000i128);
+    assert_eq!(client.total_supply(), 1000i128);
+}
+
+#[test]
+fn test_approve_zero_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&owner, &1000i128);
+    let expiration = env.ledger().sequence() + 100;
+
+    assert_eq!(
+        client.try_approve(&owner, &spender, &0i128, &expiration),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.allowance(&owner, &spender), 0i128);
+}
+
+#[test]
+fn test_approve_negative_amount_returns_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&owner, &1000i128);
+    let expiration = env.ledger().sequence() + 100;
+
+    assert_eq!(
+        client.try_approve(&owner, &spender, &-1i128, &expiration),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.allowance(&owner, &spender), 0i128);
+}
+
+// ── #1279 transfer_to_many tests ─────────────────────────────────────────────
+
+#[test]
+fn test_transfer_to_many_conserves_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let user3 = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &1000i128);
+
+    let recipients = soroban_sdk::vec![
+        &env,
+        (user1.clone(), 100i128),
+        (user2.clone(), 200i128),
+        (user3.clone(), 300i128),
+    ];
+    client.transfer_to_many(&sender, &recipients);
+
+    assert_eq!(client.balance(&sender), 400i128);
+    assert_eq!(client.balance(&user1), 100i128);
+    assert_eq!(client.balance(&user2), 200i128);
+    assert_eq!(client.balance(&user3), 300i128);
+    // Total supply is conserved across the multi-recipient payout
+    assert_eq!(client.total_supply(), 1000i128);
+    assert_eq!(
+        client.balance(&sender)
+            + client.balance(&user1)
+            + client.balance(&user2)
+            + client.balance(&user3),
+        1000i128
+    );
+}
+
+#[test]
+fn test_transfer_to_many_single_recipient() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &500i128);
+
+    let recipients = soroban_sdk::vec![&env, (recipient.clone(), 500i128)];
+    client.transfer_to_many(&sender, &recipients);
+
+    assert_eq!(client.balance(&sender), 0i128);
+    assert_eq!(client.balance(&recipient), 500i128);
+    assert_eq!(client.total_supply(), 500i128);
+}
+
+#[test]
+fn test_transfer_to_many_uses_single_authorization() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &1000i128);
+
+    let recipients = soroban_sdk::vec![
+        &env,
+        (user1.clone(), 100i128),
+        (user2.clone(), 100i128),
+    ];
+    client.transfer_to_many(&sender, &recipients);
+
+    // Exactly one authorization entry is recorded for the sender.
+    use soroban_sdk::testutils::MockAuth;
+    let auths = env.auths();
+    assert_eq!(auths.len(), 1);
+    let (auth_address, _) = auths.first().unwrap();
+    assert_eq!(auth_address, sender);
+    let _ = MockAuth::default;
+}
+
+#[test]
+fn test_transfer_to_many_insufficient_balance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &100i128);
+
+    let recipients = soroban_sdk::vec![
+        &env,
+        (user1.clone(), 100i128),
+        (user2.clone(), 100i128),
+    ];
+    assert_eq!(
+        client.try_transfer_to_many(&sender, &recipients),
+        Err(Ok(TokenError::InsufficientBalance))
+    );
+    // No balances changed
+    assert_eq!(client.balance(&sender), 100i128);
+    assert_eq!(client.balance(&user1), 0i128);
+    assert_eq!(client.balance(&user2), 0i128);
+}
+
+#[test]
+fn test_transfer_to_many_empty_recipients_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &1000i128);
+
+    let recipients: soroban_sdk::Vec<(Address, i128)> = soroban_sdk::vec![&env];
+    assert_eq!(
+        client.try_transfer_to_many(&sender, &recipients),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.balance(&sender), 1000i128);
+}
+
+#[test]
+fn test_transfer_to_many_zero_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &1000i128);
+
+    let recipients = soroban_sdk::vec![
+        &env,
+        (user1.clone(), 100i128),
+        (user2.clone(), 0i128),
+    ];
+    assert_eq!(
+        client.try_transfer_to_many(&sender, &recipients),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.balance(&sender), 1000i128);
+    assert_eq!(client.balance(&user1), 0i128);
+}
+
+#[test]
+fn test_transfer_to_many_negative_amount_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &1000i128);
+
+    let recipients = soroban_sdk::vec![&env, (user1.clone(), -1i128)];
+    assert_eq!(
+        client.try_transfer_to_many(&sender, &recipients),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(client.balance(&sender), 1000i128);
+    assert_eq!(client.balance(&user1), 0i128);
+}
+
+#[test]
+fn test_transfer_to_many_overflow_on_sum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &i128::MAX);
+
+    // The checked sum of the recipient amounts overflows i128.
+    let recipients = soroban_sdk::vec![
+        &env,
+        (user1.clone(), i128::MAX),
+        (user2.clone(), 1i128),
+    ];
+    assert_eq!(
+        client.try_transfer_to_many(&sender, &recipients),
+        Err(Ok(TokenError::Overflow))
+    );
+    assert_eq!(client.balance(&sender), i128::MAX);
+    assert_eq!(client.balance(&user1), 0i128);
+    assert_eq!(client.balance(&user2), 0i128);
+}
+
+#[test]
+fn test_transfer_to_many_self_recipient_is_noop() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let sender = Address::generate(&env);
+    let other = Address::generate(&env);
+    let client = init_token(&env, &admin);
+    client.mint(&sender, &1000i128);
+
+    let recipients = soroban_sdk::vec![
+        &env,
+        (sender.clone(), 200i128),
+        (other.clone(), 300i128),
+    ];
+    client.transfer_to_many(&sender, &recipients);
+
+    assert_eq!(client.balance(&sender), 700i128);
+    assert_eq!(client.balance(&other), 300i128);
+    assert_eq!(client.total_supply(), 1000i128);
+}
+
+#[test]
 fn test_set_admin() {
     let env = Env::default();
     env.mock_all_auths();

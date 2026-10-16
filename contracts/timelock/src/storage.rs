@@ -51,6 +51,16 @@ pub enum DataKey {
     EarlyReleasePenaltyBps,
     /// Address that receives the early release penalty.
     PenaltyRecipient,
+    /// Locked balance for a specific token (token address -> amount).
+    LockedBalance(Address),
+    /// List of release tranches for a specific token (token address -> tranches).
+    TokenTranches(Address),
+    /// Individual release tranche for a specific token
+    /// (token address, index -> tranche).
+    TokenTranche(Address, u32),
+    /// Release flag for an individual tranche of a specific token
+    /// (token address, index -> true/false).
+    TokenTrancheReleased(Address, u32),
 }
 
 #[contracttype]
@@ -90,4 +100,8 @@ pub struct TimelockInfo {
     pub yield_recipient: Option<Address>,
     /// Whether the locked balance has been deposited into staking.
     pub deposited: bool,
+    /// Per-token locked balances keyed by token address.
+    pub locked_balances: Vec<(Address, i128)>,
+    /// Per-token release schedules keyed by token address.
+    pub token_tranches: Vec<(Address, Vec<ReleaseTranche>)>,
 }

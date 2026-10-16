@@ -86,6 +86,24 @@ pub fn deposited(env: &Env, staking_contract: &Address, amount: i128) {
     );
 }
 
+pub fn token_deposited(env: &Env, token: &Address, amount: i128, release_ledger: u32) {
+    env.events().publish(
+        (Symbol::new(env, "token_deposited"), token.clone()),
+        (amount, release_ledger),
+    );
+}
+
+pub fn partial_released(env: &Env, token: &Address, beneficiary: &Address, amount: i128) {
+    env.events().publish(
+        (
+            Symbol::new(env, "partial_released"),
+            token.clone(),
+            beneficiary.clone(),
+        ),
+        amount,
+    );
+}
+
 pub fn withdrawn(env: &Env, staking_contract: &Address, amount: i128) {
     env.events().publish(
         (Symbol::new(env, "withdrawn"), staking_contract.clone()),

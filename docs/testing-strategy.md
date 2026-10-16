@@ -65,3 +65,97 @@ contracts/staking/src/test.rs   (inline proptest usage)
 
 When you add a new test file or a new fuzz target, add a row update here in the
 same PR as the new tests so this matrix stays accurate.
+
+## Mutation Testing
+
+Mutation testing systematically introduces small code changes ("mutants") and
+checks whether the test suite catches them. A mutant that is not caught by any
+test is called a **survivor** — evidence of a gap in test coverage.
+
+### Configuration
+
+Mutation testing is configured in [`mutants.toml`](../mutants.toml) at the
+workspace root. The file selects which source files to mutate and which to
+exclude (test helpers, build scripts, property test files).
+
+As of issue #1213, `mutants.toml` covers **all 19 contract packages**. Earlier
+versions (tracked as #972) only covered `token` and `escrow`.
+
+### Running Locally
+
+```bash
+# Install cargo-mutants (pin to a tested version)
+cargo install cargo-mutants --locked
+
+# Run against a single contract (fastest for iteration)
+cargo mutants -p soroban-token-template --timeout 120
+
+# Run against all contracts (slow — use CI shards for routine checks)
+cargo mutants --workspace --timeout 120 --jobs 4
+
+# Run against a specific file
+cargo mutants --file contracts/bonding-curve/src/lib.rs --timeout 120
+```
+
+Results are written to `mutants.out/` (or `--output <dir>`):
+
+```
+mutants.out/
+  caught/       # mutants killed by at least one test
+  missed/       # survivors — review these
+  timeout/      # mutants that caused test timeouts
+  cargo-mutants.log
+```
+
+### CI Integration
+
+The `mutation` job in `.github/workflows/ci.yml` runs mutation tests in four
+parallel shards:
+
+| Shard | Contracts |
+|-------|-----------|
+| `financial` | token, escrow, bonding-curve, subscription, wrapped-token |
+| `defi` | staking, vesting, swap, timelock |
+| `governance` | multisig, dao, ballot, crowdfund |
+| `utility` | marketplace, auction, nft, lottery, oracle, airdrop |
+
+The job is scheduled weekly (Sunday midnight UTC) and runs `continue-on-error: true`
+on PRs so that survivors are visible without blocking CI. Artifacts are retained for
+14 days.
+
+### Triaging Survivors
+
+A survived mutant means the test suite does not distinguish between the original code
+and a modified version. Common causes:
+
+1. **Dead code path** — the mutated branch is never exercised by any test. Add a test
+   that reaches it.
+2. **Equivalent mutant** — the mutation does not change observable behaviour (e.g.,
+   changing `>` to `>=` in a case where the boundary value is never tested). Document
+   and suppress with `// mutants::skip` if genuinely equivalent.
+3. **Test asserts only on happy path** — add a negative test that verifies the error
+   case the mutation removes.
+
+To suppress a known-equivalent mutant, add `#[cfg_attr(mutants, allow(unused))]` or
+a `// mutants::skip` comment on the specific line.
+
+### Baseline Mutation Scores
+
+These scores were established at the time of issue #1213 and represent the
+**minimum acceptable** mutation score per contract. A PR that introduces new
+logic should not reduce the score for the affected contract.
+
+| Contract | Baseline Score | Tracked in |
+|----------|:--------------:|------------|
+| token | ≥ 85% | #972 |
+| escrow | ≥ 80% | #972 |
+| bonding-curve | TBD (first run) | #1213 |
+| subscription | TBD (first run) | #1213 |
+| wrapped-token | TBD (first run) | #1213 |
+| staking | TBD (first run) | #1213 |
+| vesting | TBD (first run) | #1213 |
+| multisig | TBD (first run) | #1213 |
+| dao | TBD (first run) | #1213 |
+| all others | TBD (first run) | #1213 |
+
+Update the table after the first CI run completes and survivors have been triaged.
